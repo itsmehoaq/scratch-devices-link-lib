@@ -9,7 +9,7 @@ const clc = require('cli-color');
  * Configuration the default user data path. Just for debug.
  * @readonly
  */
-const DEFAULT_USER_DATA_PATH = path.join(__dirname, '../../.openblockData');
+const DEFAULT_USER_DATA_PATH = path.join(__dirname, '../../.winblockData');
 
 /**
  * Configuration the default tools path.
@@ -39,10 +39,10 @@ const SERVER_NAME = 'windy-link-server';
  * Legacy server id still accepted by {@link OpenBlockLink.isSameServer}.
  * @readonly
  */
-const SERVER_NAME_LEGACY = 'openblock-link-server';
+const SERVER_NAME_LEGACY = 'winblock-link-server';
 
 /**
- * The time interval for retrying to open the port after the port is occupied by another openblock-resource server.
+ * The time interval for retrying to open the port after the port is occupied by another winblock-resource server.
  * @readonly
  */
 const REOPEN_INTERVAL = 1000 * 1;
@@ -53,7 +53,7 @@ const REOPEN_INTERVAL = 1000 * 1;
  */
 const SerialportSession = require('./session/serialport'); // eslint-disable-line global-require
 const ROUTERS = {
-    '/openblock/serialport': SerialportSession,
+    '/winblock/serialport': SerialportSession,
     /** Path used by windblock-vm SERIALPORT WebSocket (windy/serial). */
     '/windy/serial': SerialportSession
 };
@@ -160,7 +160,7 @@ class OpenBlockLink extends Emitter{
         this._httpServer.on('error', e => {
             this.isSameServer('127.0.0.1', this._port).then(isSame => {
                 if (isSame) {
-                    console.log(`Port is already used by other openblock-link server, will try reopening after ${REOPEN_INTERVAL} ms`); // eslint-disable-line max-len
+                    console.log(`Port is already used by other winblock-link server, will try reopening after ${REOPEN_INTERVAL} ms`); // eslint-disable-line max-len
                     setTimeout(() => {
                         this._httpServer.close();
                         this._httpServer.listen(this._port, this._host);

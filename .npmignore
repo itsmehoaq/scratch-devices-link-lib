@@ -17,4 +17,4 @@
 /tmp
 
 # Exclude already built packages from testing with npm pack
-/openblock-link-*.{tar,tgz}
+/winblock-link-*.{tar,tgz}

@@ -1,4 +1,4 @@
-# Custommize version of openblock for only Adruino Uno & ESP32-S3
+# Custommize version of winblock for only Adruino Uno & ESP32-S3
 
 ### Instructions
 ```bash

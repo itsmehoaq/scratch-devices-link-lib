@@ -2,8 +2,8 @@ const downloadRelease = require('download-github-release');
 const path = require('path');
 const fs = require('fs');
 
-const user = 'openblockcc';
-const repo = 'openblock-firmwares';
+const user = 'winblockcc';
+const repo = 'winblock-firmwares';
 const outputdir = path.resolve('./firmwares');
 const leaveZipped = false;
 

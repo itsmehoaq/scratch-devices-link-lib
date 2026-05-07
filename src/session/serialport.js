@@ -6,6 +6,16 @@ const Arduino = require('../upload/arduino');
 const usbId = require('../lib/usb-id');
 
 const PERIPHERAL_UNPLUG_CHECK_INTERVAL = 100;
+/** Treat as unplug only after this many consecutive polls see the port closed. */
+const PERIPHERAL_UNPLUG_CLOSED_STREAK = 5;
+/** Ignore transient close/reboot gaps right after the port is opened (e.g. ESP32 RTC WDT reset). */
+const POST_OPEN_UNPLUG_GRACE_MS = 2500;
+
+const POST_FLASH_RECONNECT_INITIAL_DELAY_MS = 600;
+const POST_FLASH_RECONNECT_ATTEMPTS = 12;
+const POST_FLASH_RECONNECT_RETRY_DELAY_MS = 450;
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 class SerialportSession extends Session {
     constructor (socket, userDataPath, toolsPath) {
@@ -19,11 +29,55 @@ class SerialportSession extends Session {
         this.peripheralParams = null;
         this.services = null;
         this.reportedPeripherals = {};
+        this.reportedPeripheralSignatures = {};
         this.connectStateDetectorTimer = null;
         this.peripheralsScanorTimer = null;
         this.isRead = false;
         this.isInDisconnect = false;
         this.tool = null;
+        this._unplugGraceUntil = 0;
+        this._unplugClosedStreak = 0;
+    }
+
+    /**
+     * Refresh cached discovery entry for a COM path (needed after flash when the device resets).
+     * @param {string} path - peripheralId / SerialPort path.
+     */
+    async _refreshReportedPeripheralByPath (path) {
+        const list = await SerialPort.list();
+        const device = list.find(d => d.path === path);
+        if (!device) {
+            throw new Error(`Serial port not listed yet: ${path}`);
+        }
+        this.reportedPeripherals[path] = device;
+    }
+
+    /**
+     * Re-open serial after esptool/arduino-cli reset; OS may need time before the port is free.
+     */
+    async _connectAfterFlashWithRetries () {
+        await delay(POST_FLASH_RECONNECT_INITIAL_DELAY_MS);
+        const path = this.peripheralParams && this.peripheralParams.peripheralId;
+        let lastErr;
+        for (let attempt = 0; attempt < POST_FLASH_RECONNECT_ATTEMPTS; attempt++) {
+            try {
+                if (path) {
+                    await this._refreshReportedPeripheralByPath(path);
+                }
+                const isLastAttempt = attempt === POST_FLASH_RECONNECT_ATTEMPTS - 1;
+                await this.connect(this.peripheralParams, true, !isLastAttempt);
+                return;
+            } catch (err) {
+                lastErr = err;
+                console.warn(
+                    `[serialport] reconnect after flash attempt ${attempt + 1}/${POST_FLASH_RECONNECT_ATTEMPTS}: ${err.message}`
+                );
+                if (attempt < POST_FLASH_RECONNECT_ATTEMPTS - 1) {
+                    await delay(POST_FLASH_RECONNECT_RETRY_DELAY_MS);
+                }
+            }
+        }
+        throw lastErr;
     }
 
     async didReceiveCall (method, params, completion) {
@@ -140,6 +194,7 @@ class SerialportSession extends Session {
             throw new Error('discovery request must include filters');
         }
         this.reportedPeripherals = {};
+        this.reportedPeripheralSignatures = {};
 
         this.peripheralsScanorTimer = setInterval(() => {
             SerialPort.list().then(peripheral => {
@@ -150,14 +205,28 @@ class SerialportSession extends Session {
 
     onAdvertisementReceived (peripheral, filters) {
         if (peripheral) {
+            const currentScanPaths = new Set();
             peripheral.forEach(device => {
                 const vendorId = String(device.vendorId || '').toUpperCase();
                 const productId = String(device.productId || '').toUpperCase();
                 const pnpid = `USB\\VID_${vendorId}&PID_${productId}`;
 
                 if (filters.pnpid.includes('*') || filters.pnpid.includes(pnpid)) {
+                    currentScanPaths.add(device.path);
                     const name = this._formatDiscoveredName(device, pnpid);
                     this.reportedPeripherals[device.path] = device;
+                    const signature = JSON.stringify({
+                        name,
+                        vendorId: vendorId || null,
+                        productId: productId || null,
+                        manufacturer: device.manufacturer || null,
+                        serialNumber: device.serialNumber || null,
+                        path: device.path
+                    });
+                    if (this.reportedPeripheralSignatures[device.path] === signature) {
+                        return;
+                    }
+                    this.reportedPeripheralSignatures[device.path] = signature;
                     console.info(
                         `[discover] name="${name}", port=${device.path}, vid=${vendorId || 'N/A'}, pid=${productId || 'N/A'}`
                     );
@@ -172,10 +241,19 @@ class SerialportSession extends Session {
                     });
                 }
             });
+
+            Object.keys(this.reportedPeripheralSignatures).forEach(path => {
+                if (!currentScanPaths.has(path)) {
+                    delete this.reportedPeripheralSignatures[path];
+                }
+            });
         }
     }
 
-    connect (params, isConnectAfterUpload = false) {
+    /**
+     * @param {boolean} [silentReconnectAttempt] - When true with isConnectAfterUpload, do not notify VM of failures (internal retries).
+     */
+    connect (params, isConnectAfterUpload = false, silentReconnectAttempt = false) {
         return new Promise((resolve, reject) => {
             if (this.peripheral && this.peripheral.isOpen === true) {
                 return reject(new Error('already connected to peripheral'));
@@ -203,19 +281,21 @@ class SerialportSession extends Session {
             try {
                 port.open(openErr => {
                     if (openErr) {
-                        if (isConnectAfterUpload === true) {
+                        if (isConnectAfterUpload === true && !silentReconnectAttempt) {
                             this.sendRemoteRequest('uploadError', {
                                 message: ansi.red + openErr.message
                             });
                             this.sendRemoteRequest('peripheralUnplug', null);
                         }
-                        this._notifyConnectOpenFailure(openErr);
+                        if (!silentReconnectAttempt) {
+                            this._notifyConnectOpenFailure(openErr);
+                        }
                         return reject(new Error(openErr));
                     }
 
                     port.set({rts: rts, dtr: dtr}, setErr => {
                         if (setErr) {
-                            if (isConnectAfterUpload === true) {
+                            if (isConnectAfterUpload === true && !silentReconnectAttempt) {
                                 this.sendRemoteRequest('peripheralUnplug', null);
                             }
                             return reject(new Error(setErr));
@@ -224,12 +304,28 @@ class SerialportSession extends Session {
                         this.peripheral = port;
                         this.peripheralParams = params;
 
-                        // Scan COM status prevent device pulled out
+                        this._unplugClosedStreak = 0;
+                        this._unplugGraceUntil = Date.now() + POST_OPEN_UNPLUG_GRACE_MS;
+
+                        // Scan COM status — debounced so ESP reset / brief driver glitches do not drop the session.
                         this.connectStateDetectorTimer = setInterval(() => {
+                            if (Date.now() < this._unplugGraceUntil) {
+                                return;
+                            }
+                            if (!this.peripheral) {
+                                return;
+                            }
                             if (this.peripheral.isOpen === false) {
-                                clearInterval(this.connectStateDetectorTimer);
-                                this.disconnect();
-                                this.sendRemoteRequest('peripheralUnplug', null);
+                                this._unplugClosedStreak++;
+                                if (this._unplugClosedStreak >= PERIPHERAL_UNPLUG_CLOSED_STREAK) {
+                                    clearInterval(this.connectStateDetectorTimer);
+                                    this.connectStateDetectorTimer = null;
+                                    this._unplugClosedStreak = 0;
+                                    this.disconnect();
+                                    this.sendRemoteRequest('peripheralUnplug', null);
+                                }
+                            } else {
+                                this._unplugClosedStreak = 0;
                             }
                         }, PERIPHERAL_UNPLUG_CHECK_INTERVAL);
 
@@ -337,6 +433,7 @@ class SerialportSession extends Session {
                                 this.isInDisconnect = false;
                                 return reject(Error(error));
                             }
+                            this.peripheral = null;
                             this.isInDisconnect = false;
                             return resolve();
                         });
@@ -346,6 +443,7 @@ class SerialportSession extends Session {
                     return reject(err);
                 }
             } else {
+                this.peripheral = null;
                 return resolve();
             }
         });
@@ -367,7 +465,7 @@ class SerialportSession extends Session {
                     await this.disconnect();
                     this.sendstd(`${ansi.clear}Disconnected successfully, flash program starting...\n`);
                     const flashExitCode = await this.tool.flash();
-                    await this.connect(this.peripheralParams, true);
+                    await this._connectAfterFlashWithRetries();
                     this.sendRemoteRequest('uploadSuccess', {aborted: flashExitCode === 'Aborted'});
                 } catch (err) {
                     this.sendRemoteRequest('uploadError', {
@@ -397,7 +495,7 @@ class SerialportSession extends Session {
             await this.disconnect();
             this.sendstd(`${ansi.clear}Disconnected successfully, flash program starting...\n`);
             const flashExitCode = await this.tool.flashRealtimeFirmware();
-            await this.connect(this.peripheralParams, true);
+            await this._connectAfterFlashWithRetries();
             this.sendRemoteRequest('uploadSuccess', {aborted: flashExitCode === 'Aborted'});
         } catch (err) {
             this.sendRemoteRequest('uploadError', {

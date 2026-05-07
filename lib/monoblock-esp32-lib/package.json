@@ -1,0 +1,33 @@
+{
+  "name": "@monoblock/esp32-gateway",
+  "version": "0.1.0",
+  "description": "Transport-agnostic ESP32 gateway client for dynamic I2C module discovery and control.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "smoke": "node ./scripts/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "esp32",
+    "i2c",
+    "gateway",
+    "iot",
+    "windify",
+    "monoblock"
+  ],
+  "license": "MIT"
+}
