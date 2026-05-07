@@ -1,5 +1,4 @@
 const http = require('http');
-const url = require('url');
 const {Server} = require('ws');
 const Emitter = require('events');
 const path = require('path');
@@ -31,10 +30,16 @@ const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 11337;
 
 /**
- * Server name, ues in root path.
+ * Server name returned at GET / for health checks.
  * @readonly
  */
-const SERVER_NAME = 'openblock-link-server';
+const SERVER_NAME = 'windy-link-server';
+
+/**
+ * Legacy server id still accepted by {@link OpenBlockLink.isSameServer}.
+ * @readonly
+ */
+const SERVER_NAME_LEGACY = 'openblock-link-server';
 
 /**
  * The time interval for retrying to open the port after the port is occupied by another openblock-resource server.
@@ -46,8 +51,11 @@ const REOPEN_INTERVAL = 1000 * 1;
  * Configuration the server routers.
  * @readonly
  */
+const SerialportSession = require('./session/serialport'); // eslint-disable-line global-require
 const ROUTERS = {
-    '/openblock/serialport': require('./session/serialport') // eslint-disable-line global-require
+    '/openblock/serialport': SerialportSession,
+    /** Path used by windblock-vm SERIALPORT WebSocket (windy/serial). */
+    '/windy/serial': SerialportSession
 };
 
 /**
@@ -80,12 +88,21 @@ class OpenBlockLink extends Emitter{
         this._socketServer = new Server({server: this._httpServer});
 
         this._socketServer.on('connection', (socket, request) => {
-            const {pathname} = url.parse(request.url);
+            const reqUrl = new URL(request.url, `http://${request.headers.host || '127.0.0.1'}`);
+            const {pathname} = reqUrl;
             const Session = ROUTERS[pathname];
             let session;
             if (Session) {
                 session = new Session(socket, this.userDataPath, this.toolsPath);
-                console.info('new connection');
+                const clientIp = request && request.socket ? request.socket.remoteAddress : 'unknown-ip';
+                const clientPort = request && request.socket ? request.socket.remotePort : 'unknown-port';
+                const userAgent = request && request.headers ? request.headers['user-agent'] : 'unknown-agent';
+                console.info(
+                    `[link] new connection: path=${pathname}, client=${clientIp}:${clientPort}, ua=${userAgent}`
+                );
+                console.info(
+                    '[link] device info is not available at websocket connect stage; it will appear during discover/connect.'
+                );
                 this.emit('new-connection');
             } else {
                 return socket.close();
@@ -111,7 +128,7 @@ class OpenBlockLink extends Emitter{
             fetch(`http://${host}:${port}`)
                 .then(res => res.text())
                 .then(text => {
-                    if (text === SERVER_NAME) {
+                    if (text === SERVER_NAME || text === SERVER_NAME_LEGACY) {
                         return resolve(true);
                     }
                     return resolve(false);

@@ -32,6 +32,10 @@ class SerialportSession extends Session {
             this.discover(params);
             completion(null, null);
             break;
+        case 'stopDiscover':
+            this.stopDiscover();
+            completion(null, null);
+            break;
         case 'connect':
             await this.connect(params);
             completion(null, null);
@@ -73,6 +77,60 @@ class SerialportSession extends Session {
         }
     }
 
+    /**
+     * Stop periodic COM discovery started by {@link SerialportSession.discover}.
+     */
+    stopDiscover () {
+        if (this.peripheralsScanorTimer) {
+            clearInterval(this.peripheralsScanorTimer);
+            this.peripheralsScanorTimer = null;
+        }
+    }
+
+    /**
+     * Notify client whether abort upload may be used (GUI enables/disables button).
+     * @param {boolean} enabled - true while build/flash may be interrupted.
+     */
+    _emitSetUploadAbortEnabled (enabled) {
+        if (this._socket) {
+            this.sendRemoteRequest('setUploadAbortEnabled', {enabled: Boolean(enabled)});
+        }
+    }
+
+    /**
+     * Map serial open failures to user-facing connectError where useful.
+     * @param {Error} openErr - error from SerialPort.open.
+     */
+    _notifyConnectOpenFailure (openErr) {
+        const msg = (openErr && openErr.message) ? openErr.message : String(openErr);
+        if (msg.includes('Access denied')) {
+            this.sendRemoteRequest('connectError', {message: 'Access denied'});
+        }
+        if (msg.includes('Permission denied')) {
+            this.sendRemoteRequest('connectError', {message: 'Permission denied'});
+        }
+        if (msg.includes('Open (SetCommState): Unknown error code 31')) {
+            this.sendRemoteRequest('connectError', {message: 'Unknown error code 31'});
+        }
+        if (msg.includes('Resource temporarily unavailable') || msg.includes('EAGAIN')) {
+            this.sendRemoteRequest('connectError', {message: 'Resource temporarily unavailable'});
+        }
+    }
+
+    /**
+     * Build a user-facing label from SerialPort.list() metadata.
+     * Prefer usb-id lookup, then friendlyName/manufacturer/serialNumber.
+     * @param {object} device serialport entry.
+     * @param {string} pnpid normalized USB VID/PID key.
+     * @returns {string} display label for connection modal.
+     */
+    _formatDiscoveredName (device, pnpid) {
+        const mapped = usbId[pnpid];
+        const friendly = device.friendlyName || device.manufacturer || device.serialNumber;
+        const baseName = mapped || friendly || 'Unknown device';
+        return `${baseName} (${device.path})`;
+    }
+
     discover (params) {
         if (this.services) {
             throw new Error('cannot discover when connected');
@@ -93,16 +151,24 @@ class SerialportSession extends Session {
     onAdvertisementReceived (peripheral, filters) {
         if (peripheral) {
             peripheral.forEach(device => {
-                const vendorId = String(device.vendorId).toUpperCase();
-                const productId = String(device.productId).toUpperCase();
+                const vendorId = String(device.vendorId || '').toUpperCase();
+                const productId = String(device.productId || '').toUpperCase();
                 const pnpid = `USB\\VID_${vendorId}&PID_${productId}`;
 
                 if (filters.pnpid.includes('*') || filters.pnpid.includes(pnpid)) {
-                    const name = usbId[pnpid] ? usbId[pnpid] : 'Unknown device';
+                    const name = this._formatDiscoveredName(device, pnpid);
                     this.reportedPeripherals[device.path] = device;
+                    console.info(
+                        `[discover] name="${name}", port=${device.path}, vid=${vendorId || 'N/A'}, pid=${productId || 'N/A'}`
+                    );
                     this.sendRemoteRequest('didDiscoverPeripheral', {
                         peripheralId: device.path,
-                        name: `${name} (${device.path})`
+                        name: name,
+                        vendorId: vendorId || null,
+                        productId: productId || null,
+                        manufacturer: device.manufacturer || null,
+                        serialNumber: device.serialNumber || null,
+                        path: device.path
                     });
                 }
             });
@@ -143,12 +209,7 @@ class SerialportSession extends Session {
                             });
                             this.sendRemoteRequest('peripheralUnplug', null);
                         }
-                        if (openErr.message.includes('Access denied')) {
-                            this.sendRemoteRequest('connectError', {message: 'Access denied'});
-                        }
-                        if (openErr.message.includes('Open (SetCommState): Unknown error code 31')) {
-                            this.sendRemoteRequest('connectError', {message: 'Unknown error code 31'});
-                        }
+                        this._notifyConnectOpenFailure(openErr);
                         return reject(new Error(openErr));
                     }
 
@@ -298,7 +359,7 @@ class SerialportSession extends Session {
             this.toolsPath, this.sendstd.bind(this), this.sendRemoteRequest.bind(this));
 
         try {
-            this.sendRemoteRequest('setUploadAbortEnabled', true);
+            this._emitSetUploadAbortEnabled(true);
             const exitCode = await this.tool.build(code);
             if (exitCode === 'Success') {
                 try {
@@ -321,16 +382,17 @@ class SerialportSession extends Session {
             this.sendRemoteRequest('uploadError', {
                 message: ansi.red + err.message
             });
+        } finally {
+            this._emitSetUploadAbortEnabled(false);
+            this.tool = null;
         }
-
-        this.tool = null;
     }
 
     async uploadFirmware (params) {
         this.tool = new Arduino(this.peripheral.path, params, this.userDataPath,
             this.toolsPath, this.sendstd.bind(this));
         try {
-            this.sendRemoteRequest('setUploadAbortEnabled', true);
+            this._emitSetUploadAbortEnabled(true);
             this.sendstd(`${ansi.clear}Disconnect serial port\n`);
             await this.disconnect();
             this.sendstd(`${ansi.clear}Disconnected successfully, flash program starting...\n`);
@@ -341,9 +403,10 @@ class SerialportSession extends Session {
             this.sendRemoteRequest('uploadError', {
                 message: ansi.red + err.message
             });
+        } finally {
+            this._emitSetUploadAbortEnabled(false);
+            this.tool = null;
         }
-
-        this.tool = null;
     }
 
     async abortUpload () {
@@ -352,11 +415,18 @@ class SerialportSession extends Session {
         }
     }
 
-    sendstd (message) {
+    /**
+     * Stream compiler/uploader output to the client; optional flash progress 0..1.
+     * @param {string} message - text chunk (may include ansi).
+     * @param {number} [progress] - optional normalized progress for GUI bars.
+     */
+    sendstd (message, progress) {
         if (this._socket) {
-            this.sendRemoteRequest('uploadStdout', {
-                message: message
-            });
+            const payload = {message};
+            if (typeof progress === 'number' && !Number.isNaN(progress)) {
+                payload.progress = progress;
+            }
+            this.sendRemoteRequest('uploadStdout', payload);
         }
     }
 

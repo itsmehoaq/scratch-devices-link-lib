@@ -45,6 +45,63 @@ class Arduino {
         this.initArduinoCli();
     }
 
+    /**
+     * Ordered unique extension library paths for compiler search (--libraries).
+     * libraryOrder entries win; then config.library; duplicates removed.
+     * @returns {string[]} absolute paths that exist on disk.
+     */
+    _buildCompileLibraryPaths () {
+        const ordered = [];
+        const seen = new Set();
+        const add = p => {
+            if (!p || typeof p !== 'string') return;
+            if (!fs.existsSync(p)) return;
+            const abs = path.resolve(p);
+            if (seen.has(abs)) return;
+            seen.add(abs);
+            ordered.push(abs);
+        };
+        if (Array.isArray(this._config.libraryOrder)) {
+            this._config.libraryOrder.forEach(add);
+        }
+        if (Array.isArray(this._config.library)) {
+            this._config.library.forEach(add);
+        }
+        return ordered;
+    }
+
+    /**
+     * Simple JSON-serializable source tweaks before writing the .ino (optional).
+     * Each rule: { type: 'replace', find: string, replace: string }.
+     * @param {string} code - generated sketch source.
+     * @returns {string} possibly modified source.
+     */
+    _applySourceTransforms (code) {
+        const transforms = this._config.sourceTransforms;
+        if (!Array.isArray(transforms)) return code;
+        let out = code;
+        transforms.forEach(t => {
+            if (!t || t.type !== 'replace') return;
+            if (typeof t.find !== 'string' || typeof t.replace !== 'string') return;
+            out = out.split(t.find).join(t.replace);
+        });
+        return out;
+    }
+
+    /**
+     * Parse avrdude-style percentage from a log chunk for GUI progress (0..1).
+     * @param {string} text - stderr/stdout fragment.
+     * @returns {number|undefined} normalized progress.
+     */
+    _flashProgressFromText (text) {
+        const matches = text.match(/\d{1,3}\s*%/g);
+        if (!matches || !matches.length) return undefined;
+        const last = matches[matches.length - 1];
+        const n = parseInt(last, 10);
+        if (Number.isNaN(n)) return undefined;
+        return Math.min(1, Math.max(0, n / 100));
+    }
+
     initArduinoCli () {
         // try to init the arduino cli config.
         spawnSync(this._arduinoCliPath, ['config', 'init', '--dest-file', this._configFilePath]);
@@ -84,8 +141,9 @@ class Arduino {
                 fs.mkdirSync(this._codeFolderPath, {recursive: true});
             }
 
+            const transformed = this._applySourceTransforms(code);
             try {
-                fs.writeFileSync(this._codeFilePath, code);
+                fs.writeFileSync(this._codeFilePath, transformed);
             } catch (err) {
                 return reject(err);
             }
@@ -102,12 +160,23 @@ class Arduino {
                 this._codeFolderPath
             ];
 
-            // if extensions library to not empty
-            this._config.library.forEach(lib => {
-                if (fs.existsSync(lib)) {
-                    args.splice(3, 0, '--libraries', lib);
+            const extraLibs = this._buildCompileLibraryPaths();
+            for (let i = extraLibs.length - 1; i >= 0; i--) {
+                args.splice(3, 0, '--libraries', extraLibs[i]);
+                this._sendstd(`Inject library: ${extraLibs[i]}\n`);
+            }
+
+            const sketchIdx = args.indexOf(this._codeFolderPath);
+            if (Array.isArray(this._config.compilerDefines) && this._config.compilerDefines.length) {
+                const flags = this._config.compilerDefines
+                    .map(d => String(d).trim())
+                    .filter(Boolean)
+                    .map(d => (d.startsWith('-D') ? d : `-D${d}`))
+                    .join(' ');
+                if (flags) {
+                    args.splice(sketchIdx, 0, '--build-property', `compiler.cpp.extra_flags=${flags}`);
                 }
-            });
+            }
 
             const arduinoCli = spawn(this._arduinoCliPath, args);
             this._sendstd(`Start building...\n`);
@@ -210,13 +279,15 @@ class Arduino {
                 if (data.search(ARDUINO_CLI_STDOUT_RED_START) !== -1) {
                     data = this._insertStr(data, data.search(ARDUINO_CLI_STDOUT_RED_START), ansi.red);
                 }
-                this._sendstd(data);
+                const prog = this._flashProgressFromText(data);
+                this._sendstd(data, prog);
             });
 
             arduinoCli.stdout.on('data', buf => {
                 // It seems that avrdude didn't use stdout.
                 const data = buf.toString();
-                this._sendstd(data);
+                const prog = this._flashProgressFromText(data);
+                this._sendstd(data, prog);
             });
 
             const listenAbortSignal = setInterval(() => {

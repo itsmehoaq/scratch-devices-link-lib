@@ -11,7 +11,8 @@
     "docs": "jsdoc -c .jsdoc.json",
     "lint": "eslint ./src",
     "test": "",
-    "test:multi-server": "node test/start-multi-server.js --log-level=info"
+    "test:multi-server": "node test/start-multi-server.js --log-level=info",
+    "commitlint": "commitlint --from=HEAD~1 --to=HEAD"
   },
   "repository": {
     "type": "git",
@@ -41,10 +42,17 @@
     "ws": "^7.1.1"
   },
   "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
     "babel-eslint": "^10.0.1",
     "eslint": "^5.3.0",
     "eslint-config-scratch": "^5.0.0",
     "jsdoc": "^3.6.6",
     "rimraf": "^3.0.2"
+  },
+  "commitlint": {
+    "extends": [
+      "@commitlint/config-conventional"
+    ]
   }
 }
