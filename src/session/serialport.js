@@ -3,6 +3,7 @@ const ansi = require('ansi-string');
 
 const Session = require('./session');
 const Arduino = require('../upload/arduino');
+const Esp32 = require('../upload/esp32');
 const usbId = require('../lib/usb-id');
 
 const PERIPHERAL_UNPLUG_CHECK_INTERVAL = 100;
@@ -14,6 +15,13 @@ const POST_OPEN_UNPLUG_GRACE_MS = 2500;
 const POST_FLASH_RECONNECT_INITIAL_DELAY_MS = 600;
 const POST_FLASH_RECONNECT_ATTEMPTS = 12;
 const POST_FLASH_RECONNECT_RETRY_DELAY_MS = 450;
+const TRANSIENT_RECONNECT_ATTEMPTS = 8;
+const TRANSIENT_RECONNECT_DELAY_MS = 400;
+
+/** Default timeout for a `scanDevices` request waiting on JSON `{devices:[...]}`. */
+const SCAN_DEVICES_DEFAULT_TIMEOUT_MS = 10000;
+/** Cap to keep the scan accumulator from growing unbounded while waiting for JSON. */
+const SCAN_DEVICES_BUFFER_LIMIT = 64 * 1024;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -37,6 +45,8 @@ class SerialportSession extends Session {
         this.tool = null;
         this._unplugGraceUntil = 0;
         this._unplugClosedStreak = 0;
+        this._recoveringTransientClose = false;
+        this._scanContext = null;
     }
 
     /**
@@ -114,6 +124,16 @@ class SerialportSession extends Session {
         case 'uploadFirmware':
             completion(await this.uploadFirmware(params), null);
             break;
+        case 'uploadEsp32Bin':
+            completion(await this.uploadEsp32Bin(params), null);
+            break;
+        case 'scanDevices':
+            try {
+                completion(await this.scanDevices(params), null);
+            } catch (err) {
+                completion(null, err.message || String(err));
+            }
+            break;
         case 'abortUpload':
             completion(await this.abortUpload(), null);
             break;
@@ -185,6 +205,38 @@ class SerialportSession extends Session {
         return `${baseName} (${device.path})`;
     }
 
+    /**
+     * Build discovery metadata object consumed by VM/GUI.
+     * @param {object} device serialport entry.
+     * @param {string} pnpid normalized USB VID/PID key.
+     * @param {string} name resolved display name.
+     * @returns {object} normalized peripheral metadata.
+     */
+    _buildDiscoveryPayload (device, pnpid, name) {
+        const vendorId = String(device.vendorId || '').toUpperCase() || null;
+        const productId = String(device.productId || '').toUpperCase() || null;
+        const details = {
+            path: device.path || null,
+            pnpId: pnpid || null,
+            vendorId,
+            productId,
+            manufacturer: device.manufacturer || null,
+            serialNumber: device.serialNumber || null,
+            friendlyName: device.friendlyName || null
+        };
+        const detailSuffix = [];
+        if (details.manufacturer) detailSuffix.push(details.manufacturer);
+        if (details.serialNumber) detailSuffix.push(`#${details.serialNumber}`);
+        if (details.vendorId && details.productId) {
+            detailSuffix.push(`VID:${details.vendorId}/PID:${details.productId}`);
+        }
+        return {
+            peripheralId: device.path,
+            name: detailSuffix.length > 0 ? `${name} - ${detailSuffix.join(' | ')}` : name,
+            ...details
+        };
+    }
+
     discover (params) {
         if (this.services) {
             throw new Error('cannot discover when connected');
@@ -214,14 +266,10 @@ class SerialportSession extends Session {
                 if (filters.pnpid.includes('*') || filters.pnpid.includes(pnpid)) {
                     currentScanPaths.add(device.path);
                     const name = this._formatDiscoveredName(device, pnpid);
+                    const payload = this._buildDiscoveryPayload(device, pnpid, name);
                     this.reportedPeripherals[device.path] = device;
                     const signature = JSON.stringify({
-                        name,
-                        vendorId: vendorId || null,
-                        productId: productId || null,
-                        manufacturer: device.manufacturer || null,
-                        serialNumber: device.serialNumber || null,
-                        path: device.path
+                        ...payload
                     });
                     if (this.reportedPeripheralSignatures[device.path] === signature) {
                         return;
@@ -230,15 +278,7 @@ class SerialportSession extends Session {
                     console.info(
                         `[discover] name="${name}", port=${device.path}, vid=${vendorId || 'N/A'}, pid=${productId || 'N/A'}`
                     );
-                    this.sendRemoteRequest('didDiscoverPeripheral', {
-                        peripheralId: device.path,
-                        name: name,
-                        vendorId: vendorId || null,
-                        productId: productId || null,
-                        manufacturer: device.manufacturer || null,
-                        serialNumber: device.serialNumber || null,
-                        path: device.path
-                    });
+                    this.sendRemoteRequest('didDiscoverPeripheral', payload);
                 }
             });
 
@@ -321,8 +361,7 @@ class SerialportSession extends Session {
                                     clearInterval(this.connectStateDetectorTimer);
                                     this.connectStateDetectorTimer = null;
                                     this._unplugClosedStreak = 0;
-                                    this.disconnect();
-                                    this.sendRemoteRequest('peripheralUnplug', null);
+                                    this._recoverFromTransientClose();
                                 }
                             } else {
                                 this._unplugClosedStreak = 0;
@@ -350,6 +389,50 @@ class SerialportSession extends Session {
         });
     }
 
+    /**
+     * Recover serial session after transient reset (ESP32 reboot / RTC WDT).
+     * Falls back to unplug signal only when all retries fail.
+     */
+    async _recoverFromTransientClose () {
+        if (this._recoveringTransientClose || this.isInDisconnect) {
+            return;
+        }
+        this._recoveringTransientClose = true;
+        try {
+            if (!this.peripheralParams) {
+                throw new Error('Missing reconnect params');
+            }
+            const path = this.peripheralParams.peripheralId;
+            let lastErr = null;
+            await this.disconnect().catch(() => {});
+            for (let attempt = 0; attempt < TRANSIENT_RECONNECT_ATTEMPTS; attempt++) {
+                try {
+                    if (path) {
+                        await this._refreshReportedPeripheralByPath(path);
+                    }
+                    await this.connect(this.peripheralParams, true, true);
+                    this.sendstd(
+                        `${ansi.yellow_dark}[serialport] Recovered connection after transient reset.\n`
+                    );
+                    return;
+                } catch (err) {
+                    lastErr = err;
+                    if (attempt < TRANSIENT_RECONNECT_ATTEMPTS - 1) {
+                        await delay(TRANSIENT_RECONNECT_DELAY_MS);
+                    }
+                }
+            }
+            throw lastErr || new Error('Failed to reconnect after transient close');
+        } catch (error) {
+            this.sendstd(
+                `${ansi.red}[serialport] Connection recovery failed: ${error.message}\n`
+            );
+            this.sendRemoteRequest('peripheralUnplug', null);
+        } finally {
+            this._recoveringTransientClose = false;
+        }
+    }
+
     onMessageCallback (rev) {
         const params = {
             encoding: 'base64',
@@ -357,6 +440,66 @@ class SerialportSession extends Session {
         };
         if (this.isRead) {
             this.sendRemoteRequest('onMessage', params);
+        }
+        if (this._scanContext) {
+            this._feedScanContext(rev);
+        }
+    }
+
+    /**
+     * Append a serial chunk to the in-flight scan accumulator and resolve
+     * once the buffer contains a balanced JSON object with `devices: Array`.
+     * Mirrors the logic in hardware-console.jsx onWebSerialData (lines 904-934).
+     * @param {Buffer} rev - chunk delivered by node-serialport.
+     */
+    _feedScanContext (rev) {
+        const ctx = this._scanContext;
+        if (!ctx) return;
+        let text;
+        try {
+            text = rev.toString('utf8');
+        } catch (err) {
+            return;
+        }
+        ctx.buffer += text;
+        if (ctx.buffer.length > SCAN_DEVICES_BUFFER_LIMIT) {
+            ctx.buffer = ctx.buffer.slice(-SCAN_DEVICES_BUFFER_LIMIT);
+        }
+        const startIdx = ctx.buffer.indexOf('{');
+        const endIdx = ctx.buffer.lastIndexOf('}');
+        if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) {
+            return;
+        }
+        const candidate = ctx.buffer.substring(startIdx, endIdx + 1);
+        let parsed;
+        try {
+            parsed = JSON.parse(candidate);
+        } catch (err) {
+            return; // not yet a complete JSON, keep accumulating
+        }
+        if (!parsed || !Array.isArray(parsed.devices)) {
+            return;
+        }
+        this._resolveScanContext({devices: parsed.devices, raw: parsed});
+    }
+
+    /**
+     * Tear down the scan accumulator and resolve/reject its waiter.
+     * @param {object|null} result - parsed scan response, or null when rejecting.
+     * @param {Error} [err] - reject reason.
+     */
+    _resolveScanContext (result, err) {
+        const ctx = this._scanContext;
+        if (!ctx) return;
+        this._scanContext = null;
+        if (ctx.timeout) {
+            clearTimeout(ctx.timeout);
+            ctx.timeout = null;
+        }
+        if (err) {
+            ctx.reject(err);
+        } else {
+            ctx.resolve(result);
         }
     }
 
@@ -507,6 +650,121 @@ class SerialportSession extends Session {
         }
     }
 
+    /**
+     * Flash a triple of pre-compiled ESP32 bins (bootloader/partitions/firmware)
+     * via the bundled esptool binary, then re-establish the serial session.
+     * Mirrors hardware-console.jsx flashBinFilesToESP32 (lines 430-622) but
+     * server-side over node-serialport.
+     *
+     * @param {object} params - {chip?, baudrate?, eraseAll?, addresses?, bins:{...}}
+     */
+    async uploadEsp32Bin (params) {
+        if (!this.peripheral && !(this.peripheralParams && this.peripheralParams.peripheralId)) {
+            this.sendRemoteRequest('uploadError', {
+                message: `${ansi.red}uploadEsp32Bin requires a connected serial peripheral`
+            });
+            return;
+        }
+        const peripheralPath = (this.peripheral && this.peripheral.path) ||
+            (this.peripheralParams && this.peripheralParams.peripheralId);
+        // Drop any pending scan waiter — we are about to release the port.
+        if (this._scanContext) {
+            this._resolveScanContext(null, new Error('Scan aborted: ESP32 flash starting'));
+        }
+        this.tool = new Esp32(
+            peripheralPath,
+            params || {},
+            this.userDataPath,
+            this.toolsPath,
+            this.sendstd.bind(this)
+        );
+        try {
+            this._emitSetUploadAbortEnabled(true);
+            this.sendstd(`${ansi.clear}Disconnect serial port\n`);
+            await this.disconnect();
+            this.sendstd(`${ansi.clear}Disconnected successfully, ESP32 flash starting...\n`);
+            const flashExitCode = await this.tool.flashBins((params && params.bins) || params);
+            try {
+                await this._connectAfterFlashWithRetries();
+            } catch (reconnectErr) {
+                // Reconnect failure is recoverable from the client side; still
+                // report the flash result so the GUI can decide what to do.
+                this.sendstd(
+                    `${ansi.yellow_dark}[esp32] reconnect after flash failed: ${reconnectErr.message}\n`
+                );
+                this.sendRemoteRequest('peripheralUnplug', null);
+            }
+            this.sendRemoteRequest('uploadSuccess', {
+                aborted: flashExitCode === 'Aborted',
+                kind: 'esp32'
+            });
+        } catch (err) {
+            this.sendRemoteRequest('uploadError', {
+                message: ansi.red + err.message
+            });
+            this.sendRemoteRequest('peripheralUnplug', null);
+        } finally {
+            try {
+                if (this.tool && typeof this.tool.cleanup === 'function') {
+                    this.tool.cleanup();
+                }
+            } catch (cleanupErr) {
+                this.sendstd(
+                    `${ansi.yellow_dark}[esp32] cleanup warning: ${cleanupErr.message}\n`
+                );
+            }
+            this._emitSetUploadAbortEnabled(false);
+            this.tool = null;
+        }
+    }
+
+    /**
+     * Send a discovery command (default `scan`) to the connected peripheral,
+     * accumulate incoming bytes, and resolve when a balanced JSON
+     * `{devices:[...]}` object arrives. Mirrors hardware-console.jsx scan
+     * loop at lines 566-607.
+     *
+     * @param {object} [params] - {command, terminator, timeoutMs}
+     * @returns {Promise<object>} resolves with `{devices, raw}` parsed from the firmware's JSON reply.
+     */
+    scanDevices (params) {
+        const opts = params || {};
+        const command = typeof opts.command === 'string' ? opts.command : 'scan';
+        const terminator = typeof opts.terminator === 'string' ? opts.terminator : '\n';
+        const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : SCAN_DEVICES_DEFAULT_TIMEOUT_MS;
+
+        return new Promise((resolve, reject) => {
+            if (!this.peripheral || this.peripheral.isOpen !== true) {
+                return reject(new Error('scanDevices requires an open serial peripheral'));
+            }
+            if (this._scanContext) {
+                return reject(new Error('scanDevices already in progress'));
+            }
+
+            const ctx = {
+                buffer: '',
+                resolve,
+                reject,
+                timeout: null
+            };
+            ctx.timeout = setTimeout(() => {
+                if (this._scanContext === ctx) {
+                    this._resolveScanContext(null, new Error(`scan timeout after ${timeoutMs}ms`));
+                }
+            }, timeoutMs);
+            this._scanContext = ctx;
+
+            // Make sure existing read flag does not block the scan parser:
+            // _feedScanContext runs unconditionally when a context is active.
+            const payload = command + terminator;
+            this.write({encoding: 'utf8', message: payload}).catch(err => {
+                if (this._scanContext === ctx) {
+                    this._resolveScanContext(null, new Error(`scan write failed: ${err.message}`));
+                }
+            });
+        });
+    }
+
     async abortUpload () {
         if (this.tool !== null) {
             this.tool.abortUpload();
@@ -529,6 +787,9 @@ class SerialportSession extends Session {
     }
 
     dispose () {
+        if (this._scanContext) {
+            this._resolveScanContext(null, new Error('Session disposed'));
+        }
         this.disconnect();
         super.dispose();
         this.socket = null;
