@@ -4,6 +4,6 @@ node_modules/
 .DS_Store
 
 tools/
-firmwares/
+# firmwares/
 tmp/
 package-lock.json
