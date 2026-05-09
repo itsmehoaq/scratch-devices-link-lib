@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "fetch": "rimraf tools firmwares && node script/download-tools.js && node script/download-firmwares.js",
+    "fetch:small": "npm run fetch && npm run tools:prune && npm run tools:archive",
     "start": "rimraf ../.winblockData/link && node test/start-server.js --log-level=info",
     "start:debug": "rimraf ../.winblockData/link && node test/start-server.js --log-level=debug",
     "clean": "rimraf ../.winblockData/link tools firmwares",
@@ -12,6 +13,9 @@
     "lint": "eslint ./src",
     "test": "",
     "test:multi-server": "node test/start-multi-server.js --log-level=info",
+    "tools:archive": "node script/archive-tools.js --overwrite",
+    "tools:prune": "node script/prune-tools.js --apply",
+    "tools:prune:dry-run": "node script/prune-tools.js",
     "commitlint": "commitlint --from=HEAD~1 --to=HEAD"
   },
   "repository": {

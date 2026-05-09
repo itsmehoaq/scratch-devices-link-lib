@@ -1,0 +1,155 @@
+const fs = require('fs');
+const path = require('path');
+
+const repoRoot = path.resolve(__dirname, '..');
+const toolsRoot = path.join(repoRoot, 'tools');
+const arduinoRoot = path.join(toolsRoot, 'Arduino');
+
+const args = new Set(process.argv.slice(2));
+const shouldApply = args.has('--apply');
+const shouldHelp = args.has('--help') || args.has('-h');
+
+const requiredPaths = [
+    'Arduino/arduino-cli.exe',
+    'Arduino/packages/arduino/hardware/avr',
+    'Arduino/packages/arduino/tools/avr-gcc',
+    'Arduino/packages/arduino/tools/avrdude',
+    'Arduino/packages/esp32/hardware/esp32',
+    'Arduino/packages/esp32/tools/esp-x32',
+    'Arduino/packages/esp32/tools/esp32-arduino-libs',
+    'Arduino/packages/esp32/tools/esptool_py'
+];
+
+const removePaths = [
+    'Arduino/packages/Maixduino',
+    'Arduino/packages/SparkFun',
+    'Arduino/packages/esp8266',
+    'Arduino/packages/rp2040',
+
+    'Arduino/packages/arduino/hardware/renesas_uno',
+    'Arduino/packages/arduino/tools/arm-none-eabi-gcc',
+    'Arduino/packages/arduino/tools/bossac',
+    'Arduino/packages/arduino/tools/dfu-util',
+    'Arduino/packages/arduino/tools/openocd',
+
+    'Arduino/packages/esp32/tools/esp-rv32',
+    'Arduino/packages/esp32/tools/openocd-esp32',
+    'Arduino/packages/esp32/tools/riscv32-esp-elf-gcc',
+    'Arduino/packages/esp32/tools/riscv32-esp-elf-gdb',
+    'Arduino/packages/esp32/tools/xtensa-esp-elf-gdb',
+    'Arduino/packages/esp32/tools/xtensa-esp32-elf-gcc',
+    'Arduino/packages/esp32/tools/xtensa-esp32s2-elf-gcc',
+    'Arduino/packages/esp32/tools/xtensa-esp32s3-elf-gcc'
+];
+
+const esp32LibRelativeRoot = path.join(
+    'Arduino',
+    'packages',
+    'esp32',
+    'tools',
+    'esp32-arduino-libs'
+);
+
+const removableEsp32LibTargets = [
+    'esp32',
+    'esp32c3',
+    'esp32c6',
+    'esp32h2',
+    'esp32p4',
+    'esp32s2'
+];
+
+const formatBytes = bytes => {
+    if (!Number.isFinite(bytes)) return '0 B';
+    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+    return `${bytes} B`;
+};
+
+const getPathSize = targetPath => {
+    if (!fs.existsSync(targetPath)) return 0;
+    const stat = fs.statSync(targetPath);
+    if (!stat.isDirectory()) return stat.size;
+
+    let total = 0;
+    const entries = fs.readdirSync(targetPath);
+    for (const entry of entries) {
+        total += getPathSize(path.join(targetPath, entry));
+    }
+    return total;
+};
+
+const toAbsolute = relativePath => path.join(toolsRoot, relativePath);
+
+const toDisplayPath = relativePath => `tools/${relativePath.replace(/\\/g, '/')}`;
+
+const listEsp32LibPruneTargets = () => {
+    const libRoot = toAbsolute(esp32LibRelativeRoot);
+    if (!fs.existsSync(libRoot)) return [];
+
+    return fs.readdirSync(libRoot)
+        .map(version => path.join(esp32LibRelativeRoot, version))
+        .filter(relativeVersionPath => fs.statSync(toAbsolute(relativeVersionPath)).isDirectory())
+        .reduce((targets, relativeVersionPath) => {
+            removableEsp32LibTargets.forEach(chip => {
+                targets.push(path.join(relativeVersionPath, chip));
+            });
+            return targets;
+        }, []);
+};
+
+const assertRequiredPaths = () => {
+    const missing = requiredPaths.filter(relativePath => !fs.existsSync(toAbsolute(relativePath)));
+    if (missing.length === 0) return;
+
+    console.error('Missing required tools for Arduino Uno / ESP32-S3:');
+    missing.forEach(relativePath => console.error(`  - ${toDisplayPath(relativePath)}`));
+    process.exit(1);
+};
+
+const printUsage = () => {
+    console.log([
+        'Usage: node script/prune-tools.js [--apply]',
+        '',
+        'Without --apply this prints the paths that would be removed.',
+        'With --apply it removes unused board packages and toolchains while',
+        'keeping Arduino Uno and ESP32-S3 build/flash support.'
+    ].join('\n'));
+};
+
+if (shouldHelp) {
+    printUsage();
+    process.exit(0);
+}
+
+if (!fs.existsSync(arduinoRoot)) {
+    console.error(`Tools directory was not found: ${arduinoRoot}`);
+    console.error('Run npm run fetch before pruning.');
+    process.exit(1);
+}
+
+assertRequiredPaths();
+
+const pruneTargets = removePaths.concat(listEsp32LibPruneTargets())
+    .filter(relativePath => fs.existsSync(toAbsolute(relativePath)));
+
+const totalBytes = pruneTargets.reduce((sum, relativePath) => sum + getPathSize(toAbsolute(relativePath)), 0);
+const action = shouldApply ? 'Removing' : 'Would remove';
+
+console.log(`${action} ${pruneTargets.length} paths (${formatBytes(totalBytes)}):`);
+pruneTargets.forEach(relativePath => {
+    const absolutePath = toAbsolute(relativePath);
+    console.log(`  - ${toDisplayPath(relativePath)} (${formatBytes(getPathSize(absolutePath))})`);
+});
+
+if (!shouldApply) {
+    console.log('\nDry run only. Re-run with --apply to prune tools.');
+    process.exit(0);
+}
+
+pruneTargets.forEach(relativePath => {
+    fs.rmSync(toAbsolute(relativePath), {recursive: true, force: true});
+});
+
+console.log(`Pruned tools. Removed approximately ${formatBytes(totalBytes)}.`);

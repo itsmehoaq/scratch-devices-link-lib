@@ -4,6 +4,7 @@ const path = require('path');
 const ansi = require('ansi-string');
 const yaml = require('js-yaml');
 const os = require('os');
+const {SerialPort} = require('serialport');
 
 const ARDUINO_CLI_STDOUT_GREEN_START = /Reading \||Writing \|/g;
 const ARDUINO_CLI_STDOUT_GREEN_END = /%/g;
@@ -202,6 +203,27 @@ class Arduino {
     }
 
     /**
+     * Why: some upstream payloads occasionally prepend numeric noise before
+     * preprocessor directives (e.g. `99964968#include <Arduino.h>`), which
+     * breaks compilation immediately. Strip only that specific corruption while
+     * leaving normal sketch content untouched.
+     * @param {string} code - generated sketch source.
+     * @returns {string} sanitized source.
+     */
+    _sanitizeSketchSource (code) {
+        if (typeof code !== 'string' || !code) return code;
+        return code.replace(
+            /(^|\n)\s*\d{6,}\s*(#(?:include|define|if|ifdef|ifndef|elif|else|endif|pragma)\b)/g,
+            (m, prefix, directive) => {
+                this._sendstd(
+                    `${ansi.yellow_dark}[build] sanitized corrupted preprocessor line: ${m.trim()}\n`
+                );
+                return `${prefix}${directive}`;
+            }
+        );
+    }
+
+    /**
      * Parse avrdude-style percentage from a log chunk for GUI progress (0..1).
      * @param {string} text - stderr/stdout fragment.
      * @returns {number|undefined} normalized progress.
@@ -254,7 +276,9 @@ class Arduino {
                 fs.mkdirSync(this._codeFolderPath, {recursive: true});
             }
 
-            const transformed = this._applySourceTransforms(code);
+            const transformed = this._sanitizeSketchSource(
+                this._applySourceTransforms(code)
+            );
             const hasAt32Markers = /AT32_|at32[_A-Za-z0-9]*/.test(transformed);
             const discoveredManualLibs = this._discoverManualLibraryPaths();
             this._ensureManualLibraryCompatHeaders(discoveredManualLibs);
@@ -421,6 +445,55 @@ class Arduino {
     }
 
     /**
+     * Why: ESP32 reset during erase/upload can re-enumerate as a new COM port.
+     * Detect arduino-cli/esptool "port not available" failures reliably.
+     * @param {string} text merged stderr/stdout output.
+     * @returns {boolean} true when failure is caused by missing/busy serial port.
+     */
+    _isSerialPortOpenError (text) {
+        if (typeof text !== 'string' || !text) return false;
+        return /could not open|can't open|cannot find the file specified|serial port .* not found|no such file/i.test(text);
+    }
+
+    /**
+     * Why: after ESP32 resets, Windows may assign a different COM number.
+     * Pick a deterministic fallback serial path for one retry.
+     * @param {string} currentPath currently selected serial path.
+     * @returns {Promise<string|null>} fallback path or null when none is suitable.
+     */
+    async _resolveFallbackSerialPath (currentPath) {
+        try {
+            const ports = await SerialPort.list();
+            if (!Array.isArray(ports) || !ports.length) return null;
+            const normalizedCurrent = (currentPath || '').toUpperCase();
+            const normalizedAllowedVids = Array.isArray(this._config.espVendorIds) ?
+                this._config.espVendorIds.map(v => String(v).toUpperCase()) :
+                ['303A', '10C4', '1A86'];
+            const candidates = ports
+                .filter(p => p && typeof p.path === 'string' && p.path)
+                .filter(p => p.path.toUpperCase() !== normalizedCurrent)
+                .filter(p => {
+                    const vid = String(p.vendorId || '').toUpperCase();
+                    if (!vid) return true;
+                    return normalizedAllowedVids.includes(vid);
+                })
+                .sort((a, b) => {
+                    const ma = /COM(\d+)/i.exec(a.path || '');
+                    const mb = /COM(\d+)/i.exec(b.path || '');
+                    if (ma && mb) return Number(mb[1]) - Number(ma[1]);
+                    return String(b.path || '').localeCompare(String(a.path || ''));
+                });
+            if (!candidates.length) return null;
+            return candidates[0].path;
+        } catch (err) {
+            this._sendstd(
+                `${ansi.yellow_dark}[upload] fallback serial scan warning: ${err.message}\n`
+            );
+            return null;
+        }
+    }
+
+    /**
      * Why: clearing flash before upload helps avoid stale firmware artifacts
      * after watchdog resets or layout changes on ESP32 boards.
      * @returns {Promise<void>} resolves when erase completes.
@@ -465,32 +538,34 @@ class Arduino {
                 );
             }
         }
-        const args = [
-            'upload',
-            '--fqbn', this._config.fqbn,
-            '--verbose',
-            '--verify',
-            '--config-file', this._configFilePath,
-            `-p${this._peripheralPath}`
-        ];
+        const runFlash = (uploadPort, allowFallbackRetry) => new Promise((resolve, reject) => {
+            const args = [
+                'upload',
+                '--fqbn', this._config.fqbn,
+                '--verbose',
+                '--verify',
+                '--config-file', this._configFilePath,
+                `-p${uploadPort}`
+            ];
 
-        // for k210 we must specify the programmer used as kflash
-        if (this._config.fqbn.startsWith('Maixduino:k210:')) {
-            args.push('-Pkflash');
-        }
+            // for k210 we must specify the programmer used as kflash
+            if (this._config.fqbn.startsWith('Maixduino:k210:')) {
+                args.push('-Pkflash');
+            }
 
-        if (firmwarePath) {
-            args.push('--input-file', firmwarePath, firmwarePath);
-        } else {
-            args.push('--input-dir', this._buildPath);
-            args.push(this._codeFolderPath);
-        }
+            if (firmwarePath) {
+                args.push('--input-file', firmwarePath, firmwarePath);
+            } else {
+                args.push('--input-dir', this._buildPath);
+                args.push(this._codeFolderPath);
+            }
 
-        return new Promise((resolve, reject) => {
+            let rawOutput = '';
             const arduinoCli = spawn(this._arduinoCliPath, args);
 
             arduinoCli.stderr.on('data', buf => {
                 let data = buf.toString();
+                rawOutput += data;
 
                 // Note: avrdude emits progress chunks intermittently.
                 // There should be a better way to handle these mesaage.
@@ -513,6 +588,7 @@ class Arduino {
             arduinoCli.stdout.on('data', buf => {
                 // It seems that avrdude didn't use stdout.
                 const data = buf.toString();
+                rawOutput += data;
                 const prog = this._flashProgressFromText(data);
                 this._sendstd(data, prog);
             });
@@ -543,12 +619,31 @@ class Arduino {
                     if (this._abort) {
                         // Wait for 100ms before returning to prevent the serial port from being released.
                         wait(100).then(() => resolve('Aborted'));
+                    } else if (allowFallbackRetry && this._isEsp32Target() &&
+                        this._isSerialPortOpenError(rawOutput)) {
+                        this._resolveFallbackSerialPath(uploadPort)
+                            .then(fallbackPort => {
+                                if (!fallbackPort) {
+                                    return reject(new Error('avrdude failed to flash'));
+                                }
+                                this._sendstd(
+                                    `${ansi.yellow_dark}[upload] Port ${uploadPort} unavailable, retry on ${fallbackPort}\n`
+                                );
+                                this._peripheralPath = fallbackPort;
+                                return resolve(runFlash(fallbackPort, false));
+                            })
+                            .catch(() => reject(new Error('avrdude failed to flash')));
                     } else {
                         return reject(new Error('avrdude failed to flash'));
                     }
+                    break;
+                default:
+                    return reject(new Error('avrdude failed to flash'));
                 }
             });
         });
+
+        return runFlash(this._peripheralPath, true);
     }
 
     flashRealtimeFirmware () {
