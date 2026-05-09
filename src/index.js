@@ -53,9 +53,14 @@ const REOPEN_INTERVAL = 1000 * 1;
  */
 const SerialportSession = require('./session/serialport'); // eslint-disable-line global-require
 const ROUTERS = {
+    /** Legacy path used by older OpenBlock VM builds. */
+    '/openblock/serialport': SerialportSession,
+    /** Legacy path used by older WinBlock VM builds. */
     '/winblock/serialport': SerialportSession,
     /** Path used by windblock-vm SERIALPORT WebSocket (windy/serial). */
-    '/windy/serial': SerialportSession
+    '/windy/serial': SerialportSession,
+    /** Compatibility alias seen in some custom builds. */
+    '/windy/serialport': SerialportSession
 };
 
 /**
@@ -101,10 +106,14 @@ class OpenBlockLink extends Emitter{
                     `[link] new connection: path=${pathname}, client=${clientIp}:${clientPort}, ua=${userAgent}`
                 );
                 console.info(
-                    '[link] device info is not available at websocket connect stage; it will appear during discover/connect.'
+                    '[link] device info is not available at websocket connect stage; ' +
+                    'it will appear during discover/connect.'
                 );
                 this.emit('new-connection');
             } else {
+                console.warn(
+                    `[link] reject websocket: unsupported path=${pathname}`
+                );
                 return socket.close();
             }
             const dispose = () => {

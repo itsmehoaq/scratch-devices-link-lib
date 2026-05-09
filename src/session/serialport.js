@@ -101,8 +101,12 @@ class SerialportSession extends Session {
             completion(null, null);
             break;
         case 'connect':
-            await this.connect(params);
-            completion(null, null);
+            try {
+                await this.connect(params);
+                completion(null, null);
+            } catch (err) {
+                completion(null, err && err.message ? err.message : String(err));
+            }
             break;
         case 'disconnect':
             await this.disconnect();
@@ -558,6 +562,16 @@ class SerialportSession extends Session {
         this.isRead = true;
     }
 
+    /**
+     * Why: after flashing, the device resets and the serial session is reopened.
+     * Enabling read immediately ensures runtime logs are streamed without
+     * requiring the client to re-issue a separate read command.
+     */
+    _resumeReadAfterFlashReconnect () {
+        this.read();
+        this.sendstd(`${ansi.clear}Serial log stream resumed after flash reconnect.\n`);
+    }
+
     disconnect () {
         this.isInDisconnect = true;
         return new Promise((resolve, reject) => {
@@ -609,6 +623,7 @@ class SerialportSession extends Session {
                     this.sendstd(`${ansi.clear}Disconnected successfully, flash program starting...\n`);
                     const flashExitCode = await this.tool.flash();
                     await this._connectAfterFlashWithRetries();
+                    this._resumeReadAfterFlashReconnect();
                     this.sendRemoteRequest('uploadSuccess', {aborted: flashExitCode === 'Aborted'});
                 } catch (err) {
                     this.sendRemoteRequest('uploadError', {
@@ -639,6 +654,7 @@ class SerialportSession extends Session {
             this.sendstd(`${ansi.clear}Disconnected successfully, flash program starting...\n`);
             const flashExitCode = await this.tool.flashRealtimeFirmware();
             await this._connectAfterFlashWithRetries();
+            this._resumeReadAfterFlashReconnect();
             this.sendRemoteRequest('uploadSuccess', {aborted: flashExitCode === 'Aborted'});
         } catch (err) {
             this.sendRemoteRequest('uploadError', {
@@ -686,6 +702,7 @@ class SerialportSession extends Session {
             const flashExitCode = await this.tool.flashBins((params && params.bins) || params);
             try {
                 await this._connectAfterFlashWithRetries();
+                this._resumeReadAfterFlashReconnect();
             } catch (reconnectErr) {
                 // Reconnect failure is recoverable from the client side; still
                 // report the flash result so the GUI can decide what to do.

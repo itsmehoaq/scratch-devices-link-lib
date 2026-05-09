@@ -42,6 +42,29 @@ flowchart LR
 
 The version directory is resolved at runtime by `Esp32._resolveEsptoolBinary()` so a version bump in `winblock-tools` does not require a code change.
 
+## Pre-step: clear old firmware before sketch upload
+
+The regular Arduino upload path (`src/upload/arduino.js` -> `Arduino.flash()`) now performs a pre-step for ESP32 targets:
+
+1. Resolve bundled `esptool` from `tools/Arduino/packages/esp32/tools/esptool_py/<ver>/`.
+2. Run:
+   ```bash
+   esptool --chip <espChip> --port <serialPort> --baud <espEraseBaudrate> \
+     --before <espBefore> --after <espAfter> erase_flash
+   ```
+3. Continue with `arduino-cli upload` only when erase succeeds.
+
+Defaults:
+
+- Enabled when `fqbn` starts with `esp32:`.
+- `clearFirmwareBeforeUpload: true`
+- `espChip: "esp32s3"`
+- `espEraseBaudrate: 460800`
+- `espBefore: "default_reset"`
+- `espAfter: "hard_reset"`
+
+You can disable this behavior per-board by setting `clearFirmwareBeforeUpload: false` in upload config.
+
 ## JSON-RPC API additions
 
 Both methods are added to `src/session/serialport.js` `didReceiveCall`. The session must already be `connect`ed (a `discover` followed by a successful `connect` is the prerequisite, just like the existing `upload` flow).

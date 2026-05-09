@@ -61,6 +61,7 @@ class Arduino {
             seen.add(abs);
             ordered.push(abs);
         };
+        this._discoverManualLibraryPaths().forEach(add);
         if (Array.isArray(this._config.libraryOrder)) {
             this._config.libraryOrder.forEach(add);
         }
@@ -68,6 +69,118 @@ class Arduino {
             this._config.library.forEach(add);
         }
         return ordered;
+    }
+
+    /**
+     * Why: manual libraries are often copied into sketchbook/libraries without
+     * updating config.library. Auto-discovering keeps upload behavior in sync
+     * with local library changes.
+     * @returns {string[]} absolute candidate library directories.
+     */
+    _discoverManualLibraryPaths () {
+        const libsRoot = path.join(this._arduinoPath, 'libraries');
+        if (!fs.existsSync(libsRoot)) return [];
+        try {
+            const dirs = fs.readdirSync(libsRoot)
+                .map(name => path.join(libsRoot, name))
+                .filter(full => {
+                    try {
+                        return fs.statSync(full).isDirectory();
+                    } catch (e) {
+                        return false;
+                    }
+                });
+            return dirs.filter(dir => this._isArduinoLibraryDir(dir));
+        } catch (err) {
+            this._sendstd(`${ansi.yellow_dark}[build] scan libraries warning: ${err.message}\n`);
+            return [];
+        }
+    }
+
+    /**
+     * Why: several hand-copied AT32 libraries expose only generic headers
+     * (e.g. wk_i2c.h) but generated sketches include <LibraryName.h>.
+     * Create a tiny compatibility header so Arduino resolver can find them.
+     * @param {string[]} libDirs absolute library directories.
+     */
+    _ensureManualLibraryCompatHeaders (libDirs) {
+        if (!Array.isArray(libDirs) || libDirs.length === 0) return;
+        for (const dir of libDirs) {
+            const libName = path.basename(dir);
+            if (!libName) continue;
+            const expectedHeader = `${libName}.h`;
+            const srcHeader = path.join(dir, 'src', expectedHeader);
+            const includeHeader = path.join(dir, 'include', expectedHeader);
+            const rootHeader = path.join(dir, expectedHeader);
+            if (fs.existsSync(srcHeader) || fs.existsSync(includeHeader) || fs.existsSync(rootHeader)) {
+                continue;
+            }
+            const fallbackHeader = path.join(dir, 'include', 'wk_i2c.h');
+            if (!fs.existsSync(fallbackHeader)) {
+                continue;
+            }
+            const srcDir = path.join(dir, 'src');
+            try {
+                if (!fs.existsSync(srcDir)) {
+                    fs.mkdirSync(srcDir, {recursive: true});
+                }
+                const guard = `__${libName.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_H__`;
+                const shim = [
+                    '/* Auto-generated compatibility header for Arduino resolver. */',
+                    `#ifndef ${guard}`,
+                    `#define ${guard}`,
+                    '#include "../include/wk_i2c.h"',
+                    '#endif'
+                ].join('\n') + '\n';
+                fs.writeFileSync(srcHeader, shim, 'utf8');
+                this._sendstd(`${ansi.yellow_dark}[build] Generated compat header: ${srcHeader}\n`);
+            } catch (err) {
+                this._sendstd(
+                    `${ansi.yellow_dark}[build] compat header warning (${libName}): ${err.message}\n`
+                );
+            }
+        }
+    }
+
+    /**
+     * Why: ignore non-Arduino folders (e.g. .pio/.vscode artifacts) that cause
+     * "invalid library: no header files found" noise during compile.
+     * @param {string} dir absolute library directory path.
+     * @returns {boolean} true when folder looks like an Arduino library.
+     */
+    _isArduinoLibraryDir (dir) {
+        if (fs.existsSync(path.join(dir, 'library.properties'))) {
+            return true;
+        }
+        const hasHeaderOrSource = subdir => {
+            const target = path.join(dir, subdir);
+            if (!fs.existsSync(target)) return false;
+            try {
+                return fs.readdirSync(target).some(name => /\.(h|hpp|hh|c|cc|cpp|cxx)$/i.test(name));
+            } catch (e) {
+                return false;
+            }
+        };
+        if (hasHeaderOrSource('src') || hasHeaderOrSource('include')) {
+            return true;
+        }
+        try {
+            return fs.readdirSync(dir).some(name => /\.(h|hpp|hh|c|cc|cpp|cxx)$/i.test(name));
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
+     * Prefer the bundled AT32 WS2812B lib when AT32 blocks are present.
+     * @returns {string|null} absolute library directory or null.
+     */
+    _getBundledAt32Ws2812bLibraryPath () {
+        const ws2812b = path.join(this._arduinoPath, 'libraries', 'WS2812B');
+        if (fs.existsSync(ws2812b)) {
+            return path.resolve(ws2812b);
+        }
+        return null;
     }
 
     /**
@@ -95,10 +208,10 @@ class Arduino {
      */
     _flashProgressFromText (text) {
         const matches = text.match(/\d{1,3}\s*%/g);
-        if (!matches || !matches.length) return undefined;
+        if (!matches || !matches.length) return;
         const last = matches[matches.length - 1];
         const n = parseInt(last, 10);
-        if (Number.isNaN(n)) return undefined;
+        if (Number.isNaN(n)) return;
         return Math.min(1, Math.max(0, n / 100));
     }
 
@@ -142,6 +255,9 @@ class Arduino {
             }
 
             const transformed = this._applySourceTransforms(code);
+            const hasAt32Markers = /AT32_|at32[_A-Za-z0-9]*/.test(transformed);
+            const discoveredManualLibs = this._discoverManualLibraryPaths();
+            this._ensureManualLibraryCompatHeaders(discoveredManualLibs);
             try {
                 fs.writeFileSync(this._codeFilePath, transformed);
             } catch (err) {
@@ -151,7 +267,6 @@ class Arduino {
             const args = [
                 'compile',
                 '--fqbn', this._config.fqbn,
-                '--libraries', path.join(this._arduinoPath, 'libraries'),
                 '--warnings=none',
                 '--verbose',
                 '--build-path', this._buildPath,
@@ -161,6 +276,13 @@ class Arduino {
             ];
 
             const extraLibs = this._buildCompileLibraryPaths();
+            if (hasAt32Markers) {
+                const at32Ws2812b = this._getBundledAt32Ws2812bLibraryPath();
+                if (at32Ws2812b && !extraLibs.includes(at32Ws2812b)) {
+                    extraLibs.unshift(at32Ws2812b);
+                    this._sendstd(`Inject AT32 WS2812B library: ${at32Ws2812b}\n`);
+                }
+            }
             for (let i = extraLibs.length - 1; i >= 0; i--) {
                 args.splice(3, 0, '--libraries', extraLibs[i]);
                 this._sendstd(`Inject library: ${extraLibs[i]}\n`);
@@ -171,7 +293,10 @@ class Arduino {
                 const flags = this._config.compilerDefines
                     .map(d => String(d).trim())
                     .filter(Boolean)
-                    .map(d => (d.startsWith('-D') ? d : `-D${d}`))
+                    .map(d => {
+                        if (d.startsWith('-D')) return d;
+                        return `-D${d}`;
+                    })
                     .join(' ');
                 if (flags) {
                     args.splice(sketchIdx, 0, '--build-property', `compiler.cpp.extra_flags=${flags}`);
@@ -237,7 +362,109 @@ class Arduino {
         return soure.slice(0, start) + newStr + soure.slice(start);
     }
 
+    /**
+     * Why: pre-erase is useful for ESP32 class boards where stale app/partitions
+     * can cause unstable boot after repeated flashes.
+     * @returns {boolean} true when the target fqbn belongs to ESP32 core.
+     */
+    _isEsp32Target () {
+        return typeof this._config.fqbn === 'string' &&
+            this._config.fqbn.toLowerCase().startsWith('esp32:');
+    }
+
+    /**
+     * Why: allow users to disable the extra erase step per board/profile while
+     * keeping safer defaults for ESP32 uploads.
+     * @returns {boolean} whether erase should run before upload.
+     */
+    _shouldClearFirmwareBeforeUpload () {
+        if (!this._isEsp32Target()) return false;
+        if (typeof this._config.clearFirmwareBeforeUpload === 'boolean') {
+            return this._config.clearFirmwareBeforeUpload;
+        }
+        return true;
+    }
+
+    /**
+     * Why: bundled esptool is more stable than shell PATH lookup and keeps
+     * upload behavior deterministic across environments.
+     * @returns {string} absolute esptool binary path or plain executable name.
+     */
+    _resolveEsp32EsptoolPath () {
+        const isWin = os.platform() === 'win32';
+        const exeName = isWin ? 'esptool.exe' : 'esptool';
+        const explicit = this._config.esptoolPath;
+        if (explicit && fs.existsSync(explicit)) {
+            return explicit;
+        }
+        const baseDir = path.join(
+            this._arduinoPath,
+            'packages', 'esp32', 'tools', 'esptool_py'
+        );
+        try {
+            if (fs.existsSync(baseDir)) {
+                const versions = fs.readdirSync(baseDir)
+                    .filter(name => fs.statSync(path.join(baseDir, name)).isDirectory())
+                    .sort()
+                    .reverse();
+                for (const ver of versions) {
+                    const candidate = path.join(baseDir, ver, exeName);
+                    if (fs.existsSync(candidate)) {
+                        return candidate;
+                    }
+                }
+            }
+        } catch (err) {
+            this._sendstd(`${ansi.yellow_dark}[upload] esptool resolver warning: ${err.message}\n`);
+        }
+        return exeName;
+    }
+
+    /**
+     * Why: clearing flash before upload helps avoid stale firmware artifacts
+     * after watchdog resets or layout changes on ESP32 boards.
+     * @returns {Promise<void>} resolves when erase completes.
+     */
+    _clearEsp32FirmwareBeforeUpload () {
+        return new Promise((resolve, reject) => {
+            const esptoolPath = this._resolveEsp32EsptoolPath();
+            const args = [
+                '--chip', this._config.espChip || 'esp32s3',
+                '--port', this._peripheralPath,
+                '--baud', String(this._config.espEraseBaudrate || 460800),
+                '--before', this._config.espBefore || 'default_reset',
+                '--after', this._config.espAfter || 'hard_reset',
+                'erase_flash'
+            ];
+            this._sendstd(
+                `${ansi.yellow_dark}[upload] Clear old firmware before upload...\n`
+            );
+            const proc = spawn(esptoolPath, args, {windowsHide: true});
+            proc.stdout.on('data', buf => this._sendstd(buf.toString()));
+            proc.stderr.on('data', buf => this._sendstd(buf.toString()));
+            proc.on('error', err => reject(new Error(`Failed to spawn esptool: ${err.message}`)));
+            proc.on('exit', code => {
+                if (code === 0) {
+                    this._sendstd(`${ansi.green_dark}[upload] Firmware erase done.\n`);
+                    return resolve();
+                }
+                return reject(new Error(`Failed to clear old firmware (exit code ${code})`));
+            });
+        });
+    }
+
     async flash (firmwarePath = null) {
+        if (!firmwarePath && this._shouldClearFirmwareBeforeUpload()) {
+            try {
+                await this._clearEsp32FirmwareBeforeUpload();
+            } catch (err) {
+                // Pre-erase is a best-effort safety step. On USB reset-capable ESP32 boards
+                // the COM port may briefly disappear, so continue with normal upload attempt.
+                this._sendstd(
+                    `${ansi.yellow_dark}[upload] Pre-erase failed, continue upload: ${err.message}\n`
+                );
+            }
+        }
         const args = [
             'upload',
             '--fqbn', this._config.fqbn,
@@ -265,7 +492,7 @@ class Arduino {
             arduinoCli.stderr.on('data', buf => {
                 let data = buf.toString();
 
-                // todo: Because the feacture of avrdude sends STD information intermittently.
+                // Note: avrdude emits progress chunks intermittently.
                 // There should be a better way to handle these mesaage.
                 if (data.search(ARDUINO_CLI_STDOUT_GREEN_START) !== -1) {
                     data = this._insertStr(data, data.search(ARDUINO_CLI_STDOUT_GREEN_START), ansi.green_dark);
