@@ -52,18 +52,19 @@ The regular Arduino upload path (`src/upload/arduino.js` -> `Arduino.flash()`) n
    esptool --chip <espChip> --port <serialPort> --baud <espEraseBaudrate> \
      --before <espBefore> --after <espAfter> erase_flash
    ```
-3. Continue with `arduino-cli upload` only when erase succeeds.
+3. If erase fails with a non-zero exit code, **retry once at 115200 baud** (more reliable on noisy USB links).
+4. If both attempts fail, log a warning and **still run** `arduino-cli upload` (best-effort; upload may succeed anyway).
+5. After a successful erase, link-lib waits (`espPostErasePortDelayMs`, default ~1600 ms on Windows / ~900 ms elsewhere) and rescans serial ports: if the original COM is back it is kept; otherwise the next best Espressif/UART port near the old COM number is chosen before `arduino-cli upload`.
+6. If upload fails because the original port disappears, fallback-port retry avoids legacy low COM ports (`COM1/2/3`) on Windows and prefers ports numerically near the original one.
 
 Defaults:
 
-- Enabled when `fqbn` starts with `esp32:`.
-- `clearFirmwareBeforeUpload: true`
+- Applies when `fqbn` starts with `esp32:`.
+- `clearFirmwareBeforeUpload: true` — runs full-chip erase before sketch upload for ESP32 targets. After erase, link-lib waits for USB re-enumeration and rescans serial ports (step 5 above) so native USB CDC boards (e.g. ESP32-S3) can reopen on the same or a new COM. Set to `false` for faster uploads or when you want to skip erase entirely.
 - `espChip: "esp32s3"`
-- `espEraseBaudrate: 460800`
+- `espEraseBaudrate: 460800` (then automatic retry at `115200` on failure)
 - `espBefore: "default_reset"`
 - `espAfter: "hard_reset"`
-
-You can disable this behavior per-board by setting `clearFirmwareBeforeUpload: false` in upload config.
 
 ## JSON-RPC API additions
 

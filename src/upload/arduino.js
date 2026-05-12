@@ -14,6 +14,10 @@ const ARDUINO_CLI_STDERR_RED_IGNORE = /Executable segment sizes/g;
 
 const ABORT_STATE_CHECK_INTERVAL = 100;
 
+/** Matches arduino-cli / esptool serial port open failures (upload retry). */
+const ESP_SERIAL_OPEN_ERROR_RE =
+    /could not open|can't open|cannot find the file specified|serial port .* not found|no such file/i;
+
 class Arduino {
     constructor (peripheralPath, config, userDataPath, toolsPath, sendstd) {
         this._peripheralPath = peripheralPath;
@@ -126,13 +130,15 @@ class Arduino {
                     fs.mkdirSync(srcDir, {recursive: true});
                 }
                 const guard = `__${libName.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_H__`;
-                const shim = [
-                    '/* Auto-generated compatibility header for Arduino resolver. */',
-                    `#ifndef ${guard}`,
-                    `#define ${guard}`,
-                    '#include "../include/wk_i2c.h"',
-                    '#endif'
-                ].join('\n') + '\n';
+                const shim = `${
+                    [
+                        '/* Auto-generated compatibility header for Arduino resolver. */',
+                        `#ifndef ${guard}`,
+                        `#define ${guard}`,
+                        '#include "../include/wk_i2c.h"',
+                        '#endif'
+                    ].join('\n')
+                }\n`;
                 fs.writeFileSync(srcHeader, shim, 'utf8');
                 this._sendstd(`${ansi.yellow_dark}[build] Generated compat header: ${srcHeader}\n`);
             } catch (err) {
@@ -202,17 +208,51 @@ class Arduino {
         return out;
     }
 
+    _libraryHasHeader (libDir, headerName) {
+        if (!libDir || !headerName) return false;
+        const candidates = [
+            path.join(libDir, headerName),
+            path.join(libDir, 'src', headerName),
+            path.join(libDir, 'include', headerName)
+        ];
+        return candidates.some(p => fs.existsSync(p));
+    }
+
+    _hasHeaderInKnownLibraries (headerName, extraLibDirs) {
+        if (!headerName) return false;
+        const libsRoot = path.join(this._arduinoPath, 'libraries');
+        if (fs.existsSync(libsRoot)) {
+            try {
+                const names = fs.readdirSync(libsRoot);
+                for (const name of names) {
+                    const full = path.join(libsRoot, name);
+                    try {
+                        if (!fs.statSync(full).isDirectory()) continue;
+                    } catch (e) {
+                        continue;
+                    }
+                    if (this._libraryHasHeader(full, headerName)) return true;
+                }
+            } catch (e) {
+                // ignore scan errors; extraLibDirs check below may still succeed.
+            }
+        }
+        if (!Array.isArray(extraLibDirs)) return false;
+        return extraLibDirs.some(dir => this._libraryHasHeader(dir, headerName));
+    }
+
     /**
      * Why: some upstream payloads occasionally prepend numeric noise before
      * preprocessor directives (e.g. `99964968#include <Arduino.h>`), which
      * breaks compilation immediately. Strip only that specific corruption while
      * leaving normal sketch content untouched.
      * @param {string} code - generated sketch source.
+     * @param {string[]|undefined} extraLibDirs - extra library roots for header lookup.
      * @returns {string} sanitized source.
      */
-    _sanitizeSketchSource (code) {
+    _sanitizeSketchSource (code, extraLibDirs) {
         if (typeof code !== 'string' || !code) return code;
-        return code.replace(
+        let out = code.replace(
             /(^|\n)\s*\d{6,}\s*(#(?:include|define|if|ifdef|ifndef|elif|else|endif|pragma)\b)/g,
             (m, prefix, directive) => {
                 this._sendstd(
@@ -221,6 +261,19 @@ class Arduino {
                 return `${prefix}${directive}`;
             }
         );
+        if (
+            out.includes('#include <Adafruit_AHTX0.h>') &&
+            !this._hasHeaderInKnownLibraries('Adafruit_AHTX0.h', extraLibDirs)
+        ) {
+            out = out.replace(
+                /^\s*#include\s*<Adafruit_AHTX0\.h>\s*[\r]?\n?/gm,
+                ''
+            );
+            this._sendstd(
+                `${ansi.yellow_dark}[build] strip missing include: <Adafruit_AHTX0.h> (library not found)\n`
+            );
+        }
+        return out;
     }
 
     /**
@@ -276,12 +329,15 @@ class Arduino {
                 fs.mkdirSync(this._codeFolderPath, {recursive: true});
             }
 
-            const transformed = this._sanitizeSketchSource(
-                this._applySourceTransforms(code)
-            );
-            const hasAt32Markers = /AT32_|at32[_A-Za-z0-9]*/.test(transformed);
             const discoveredManualLibs = this._discoverManualLibraryPaths();
             this._ensureManualLibraryCompatHeaders(discoveredManualLibs);
+            const compileLibsForSanitize = this._buildCompileLibraryPaths();
+
+            const transformed = this._sanitizeSketchSource(
+                this._applySourceTransforms(code),
+                compileLibsForSanitize
+            );
+            const hasAt32Markers = /AT32_|at32[_A-Za-z0-9]*/.test(transformed);
             try {
                 fs.writeFileSync(this._codeFilePath, transformed);
             } catch (err) {
@@ -410,6 +466,78 @@ class Arduino {
     }
 
     /**
+     * After esptool erase_flash + hard_reset the ESP32-S3 may disappear from the
+     * original COM for hundreds of ms. Wait, then return the best serial path:
+     * same COM if it came back, else another Espressif/UART bridge port.
+     * @param {string} preferredPath port user selected (e.g. COM9)
+     * @returns {Promise<string|null>} resolved serial path, or null if none found.
+     */
+    async _resolveEsp32PortAfterErase (preferredPath) {
+        const delayMs = typeof this._config.espPostErasePortDelayMs === 'number' ?
+            this._config.espPostErasePortDelayMs :
+            (os.platform() === 'win32' ? 1600 : 900);
+        if (delayMs > 0) {
+            await new Promise(r => setTimeout(r, delayMs));
+        }
+        try {
+            const ports = await SerialPort.list();
+            if (!Array.isArray(ports) || !ports.length) return null;
+            const normalizedAllowedVids = Array.isArray(this._config.espVendorIds) ?
+                this._config.espVendorIds.map(v => {
+                    const s = String(v).replace(/^0x/i, '');
+                    return s.toUpperCase();
+                }) :
+                ['303A', '10C4', '1A86'];
+            const normalizeVid = p => {
+                const raw = String(p.vendorId || '').replace(/^0x/i, '');
+                return raw.toUpperCase();
+            };
+            const comNum = serialPath => {
+                const m = /COM(\d+)/i.exec(serialPath || '');
+                return m ? Number(m[1]) : -1;
+            };
+            const prefUpper = (preferredPath || '').toUpperCase();
+            const prefCom = comNum(preferredPath);
+            const vidRank = vid => {
+                if (vid === '303A') return 4;
+                if (vid === '10C4' || vid === '1A86') return 3;
+                return normalizedAllowedVids.includes(vid) ? 2 : 0;
+            };
+            const matching = ports
+                .filter(p => p && typeof p.path === 'string' && p.path)
+                .map(p => ({path: p.path, vid: normalizeVid(p)}))
+                .filter(p => p.vid && normalizedAllowedVids.includes(p.vid));
+            if (!matching.length) return null;
+            const stillThere = matching.find(p => p.path.toUpperCase() === prefUpper);
+            if (stillThere) {
+                return stillThere.path;
+            }
+            let candidates = matching;
+            if (os.platform() === 'win32' && this._config.allowLowComFallback !== true &&
+                prefCom > 3) {
+                candidates = matching.filter(p => comNum(p.path) > 3);
+            }
+            if (!candidates.length) return null;
+            candidates.sort((a, b) => {
+                const r = vidRank(b.vid) - vidRank(a.vid);
+                if (r !== 0) return r;
+                if (prefCom > 0) {
+                    const da = Math.abs(comNum(a.path) - prefCom);
+                    const db = Math.abs(comNum(b.path) - prefCom);
+                    if (da !== db) return da - db;
+                }
+                return comNum(b.path) - comNum(a.path);
+            });
+            return candidates[0].path;
+        } catch (err) {
+            this._sendstd(
+                `${ansi.yellow_dark}[upload] post-erase port scan warning: ${err.message}\n`
+            );
+            return null;
+        }
+    }
+
+    /**
      * Why: bundled esptool is more stable than shell PATH lookup and keeps
      * upload behavior deterministic across environments.
      * @returns {string} absolute esptool binary path or plain executable name.
@@ -452,38 +580,71 @@ class Arduino {
      */
     _isSerialPortOpenError (text) {
         if (typeof text !== 'string' || !text) return false;
-        return /could not open|can't open|cannot find the file specified|serial port .* not found|no such file/i.test(text);
+        return ESP_SERIAL_OPEN_ERROR_RE.test(text);
     }
 
     /**
      * Why: after ESP32 resets, Windows may assign a different COM number.
-     * Pick a deterministic fallback serial path for one retry.
+     * Pick one fallback serial path for a single retry. Ignore ports with no USB
+     * VID (avoids COM1/modem ghosts). Prefer Espressif (303A), then CP210x/CH340.
+     * Waits briefly first so USB can re-enumerate after a failed open.
      * @param {string} currentPath currently selected serial path.
      * @returns {Promise<string|null>} fallback path or null when none is suitable.
      */
     async _resolveFallbackSerialPath (currentPath) {
+        const delayMs = typeof this._config.espFallbackScanDelayMs === 'number' ?
+            this._config.espFallbackScanDelayMs : 400;
+        if (delayMs > 0) {
+            await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
+        }
         try {
             const ports = await SerialPort.list();
             if (!Array.isArray(ports) || !ports.length) return null;
             const normalizedCurrent = (currentPath || '').toUpperCase();
             const normalizedAllowedVids = Array.isArray(this._config.espVendorIds) ?
-                this._config.espVendorIds.map(v => String(v).toUpperCase()) :
+                this._config.espVendorIds.map(v => {
+                    const s = String(v).replace(/^0x/i, '');
+                    return s.toUpperCase();
+                }) :
                 ['303A', '10C4', '1A86'];
+            const normalizeVid = p => {
+                const raw = String(p.vendorId || '').replace(/^0x/i, '');
+                return raw.toUpperCase();
+            };
+            const comNum = serialPath => {
+                const m = /COM(\d+)/i.exec(serialPath || '');
+                return m ? Number(m[1]) : -1;
+            };
+            const currentComNum = comNum(currentPath);
+            const vidRank = vid => {
+                if (vid === '303A') return 4;
+                if (vid === '10C4' || vid === '1A86') return 3;
+                return normalizedAllowedVids.includes(vid) ? 2 : 0;
+            };
             const candidates = ports
                 .filter(p => p && typeof p.path === 'string' && p.path)
                 .filter(p => p.path.toUpperCase() !== normalizedCurrent)
+                .map(p => ({path: p.path, vid: normalizeVid(p)}))
                 .filter(p => {
-                    const vid = String(p.vendorId || '').toUpperCase();
-                    if (!vid) return true;
-                    return normalizedAllowedVids.includes(vid);
+                    if (os.platform() !== 'win32') return true;
+                    if (this._config.allowLowComFallback === true) return true;
+                    const n = comNum(p.path);
+                    if (n <= 0) return true;
+                    if (currentComNum > 3) return n > 3;
+                    return true;
                 })
-                .sort((a, b) => {
-                    const ma = /COM(\d+)/i.exec(a.path || '');
-                    const mb = /COM(\d+)/i.exec(b.path || '');
-                    if (ma && mb) return Number(mb[1]) - Number(ma[1]);
-                    return String(b.path || '').localeCompare(String(a.path || ''));
-                });
+                .filter(p => p.vid && normalizedAllowedVids.includes(p.vid));
             if (!candidates.length) return null;
+            candidates.sort((a, b) => {
+                const r = vidRank(b.vid) - vidRank(a.vid);
+                if (r !== 0) return r;
+                if (currentComNum > 0) {
+                    const da = Math.abs(comNum(a.path) - currentComNum);
+                    const db = Math.abs(comNum(b.path) - currentComNum);
+                    if (da !== db) return da - db;
+                }
+                return comNum(b.path) - comNum(a.path);
+            });
             return candidates[0].path;
         } catch (err) {
             this._sendstd(
@@ -496,33 +657,51 @@ class Arduino {
     /**
      * Why: clearing flash before upload helps avoid stale firmware artifacts
      * after watchdog resets or layout changes on ESP32 boards.
+     * Retries once at 115200 baud when the first erase fails (USB UART often
+     * drops high-speed esptool runs on Windows / long cables).
      * @returns {Promise<void>} resolves when erase completes.
      */
     _clearEsp32FirmwareBeforeUpload () {
         return new Promise((resolve, reject) => {
             const esptoolPath = this._resolveEsp32EsptoolPath();
-            const args = [
-                '--chip', this._config.espChip || 'esp32s3',
-                '--port', this._peripheralPath,
-                '--baud', String(this._config.espEraseBaudrate || 460800),
-                '--before', this._config.espBefore || 'default_reset',
-                '--after', this._config.espAfter || 'hard_reset',
-                'erase_flash'
-            ];
-            this._sendstd(
-                `${ansi.yellow_dark}[upload] Clear old firmware before upload...\n`
-            );
-            const proc = spawn(esptoolPath, args, {windowsHide: true});
-            proc.stdout.on('data', buf => this._sendstd(buf.toString()));
-            proc.stderr.on('data', buf => this._sendstd(buf.toString()));
-            proc.on('error', err => reject(new Error(`Failed to spawn esptool: ${err.message}`)));
-            proc.on('exit', code => {
-                if (code === 0) {
-                    this._sendstd(`${ansi.green_dark}[upload] Firmware erase done.\n`);
-                    return resolve();
+            const chip = this._config.espChip || 'esp32s3';
+            const before = this._config.espBefore || 'default_reset';
+            const after = this._config.espAfter || 'hard_reset';
+            const lowBaud = 115200;
+            const runErase = (baud, isRetry) => {
+                const args = [
+                    '--chip', chip,
+                    '--port', this._peripheralPath,
+                    '--baud', String(baud),
+                    '--before', before,
+                    '--after', after,
+                    'erase_flash'
+                ];
+                if (isRetry) {
+                    this._sendstd(
+                        `${ansi.yellow_dark}[upload] Retrying firmware erase at ${baud} baud...\n`
+                    );
+                } else {
+                    this._sendstd(
+                        `${ansi.yellow_dark}[upload] Clear old firmware before upload...\n`
+                    );
                 }
-                return reject(new Error(`Failed to clear old firmware (exit code ${code})`));
-            });
+                const proc = spawn(esptoolPath, args, {windowsHide: true});
+                proc.stdout.on('data', buf => this._sendstd(buf.toString()));
+                proc.stderr.on('data', buf => this._sendstd(buf.toString()));
+                proc.on('error', err => reject(new Error(`Failed to spawn esptool: ${err.message}`)));
+                proc.on('exit', code => {
+                    if (code === 0) {
+                        this._sendstd(`${ansi.green_dark}[upload] Firmware erase done.\n`);
+                        return resolve();
+                    }
+                    if (!isRetry && Number(baud) > lowBaud) {
+                        return runErase(lowBaud, true);
+                    }
+                    return reject(new Error(`Failed to clear old firmware (exit code ${code})`));
+                });
+            };
+            runErase(this._config.espEraseBaudrate || 460800, false);
         });
     }
 
@@ -530,6 +709,20 @@ class Arduino {
         if (!firmwarePath && this._shouldClearFirmwareBeforeUpload()) {
             try {
                 await this._clearEsp32FirmwareBeforeUpload();
+                const afterErase = await this._resolveEsp32PortAfterErase(this._peripheralPath);
+                if (afterErase && afterErase !== this._peripheralPath) {
+                    this._sendstd([
+                        `${ansi.yellow_dark}[upload] Port after chip erase: ${afterErase}`,
+                        `(was ${this._peripheralPath})\n`
+                    ].join(''));
+                    this._peripheralPath = afterErase;
+                } else if (!afterErase) {
+                    this._sendstd([
+                        `${ansi.yellow_dark}[upload] `,
+                        'No USB serial port found after erase yet; ',
+                        'upload may fail until the device re-enumerates.\n'
+                    ].join(''));
+                }
             } catch (err) {
                 // Pre-erase is a best-effort safety step. On USB reset-capable ESP32 boards
                 // the COM port may briefly disappear, so continue with normal upload attempt.
@@ -606,40 +799,41 @@ class Arduino {
             arduinoCli.on('exit', code => {
                 clearInterval(listenAbortSignal);
                 const wait = ms => new Promise(relv => setTimeout(relv, ms));
-                switch (code) {
-                case 0:
+                if (code === 0) {
                     if (this._config.postUploadDelay) {
-                        // Waiting for usb rerecognize.
                         wait(this._config.postUploadDelay).then(() => resolve('Success'));
                     } else {
-                        return resolve('Success');
+                        resolve('Success');
                     }
-                    break;
-                case 1:
-                    if (this._abort) {
-                        // Wait for 100ms before returning to prevent the serial port from being released.
-                        wait(100).then(() => resolve('Aborted'));
-                    } else if (allowFallbackRetry && this._isEsp32Target() &&
-                        this._isSerialPortOpenError(rawOutput)) {
-                        this._resolveFallbackSerialPath(uploadPort)
-                            .then(fallbackPort => {
-                                if (!fallbackPort) {
-                                    return reject(new Error('avrdude failed to flash'));
-                                }
-                                this._sendstd(
-                                    `${ansi.yellow_dark}[upload] Port ${uploadPort} unavailable, retry on ${fallbackPort}\n`
-                                );
-                                this._peripheralPath = fallbackPort;
-                                return resolve(runFlash(fallbackPort, false));
-                            })
-                            .catch(() => reject(new Error('avrdude failed to flash')));
-                    } else {
-                        return reject(new Error('avrdude failed to flash'));
-                    }
-                    break;
-                default:
-                    return reject(new Error('avrdude failed to flash'));
+                    return;
                 }
+                if (this._abort) {
+                    wait(100).then(() => resolve('Aborted'));
+                    return;
+                }
+                const esptoolLikeFailure = code === 1 || code === 2;
+                if (allowFallbackRetry && this._isEsp32Target() &&
+                    esptoolLikeFailure &&
+                    this._isSerialPortOpenError(rawOutput)) {
+                    this._resolveFallbackSerialPath(uploadPort)
+                        .then(fallbackPort => {
+                            if (!fallbackPort) {
+                                return reject(new Error(
+                                    'Serial port missing or busy: no ESP/USB-UART device found. ' +
+                                    'Reconnect USB, refresh the port list, pick the correct COM ' +
+                                    '(Espressif/CP210x/CH343), and close Serial Monitor or other apps using the port.'
+                                ));
+                            }
+                            this._sendstd(
+                                `${ansi.yellow_dark}[upload] Port ${uploadPort} unavailable, retry on ${fallbackPort}\n`
+                            );
+                            this._peripheralPath = fallbackPort;
+                            return resolve(runFlash(fallbackPort, false));
+                        })
+                        .catch(() => reject(new Error('avrdude failed to flash')));
+                    return;
+                }
+                reject(new Error('avrdude failed to flash'));
             });
         });
 
