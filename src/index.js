@@ -18,10 +18,27 @@ const DEFAULT_USER_DATA_PATH = path.join(__dirname, '../../.winblockData');
 const DEFAULT_TOOLS_PATH = path.join(__dirname, '../tools');
 
 /**
- * Configuration the default host.
+ * Default bind address for the HTTP/WebSocket server.
+ * Client-safe default is `127.0.0.1` (loopback-only, local machine).
+ * Set `WINDY_LINK_LISTEN_HOST=0.0.0.0` to expose over LAN when needed.
+ * The address `0.0.0.1` is not valid for bind (EADDRNOTAVAIL).
  * @readonly
  */
-const DEFAULT_HOST = '0.0.0.0';
+const DEFAULT_HOST = (() => {
+    const fromEnv = process.env && process.env.WINDY_LINK_LISTEN_HOST ?
+        String(process.env.WINDY_LINK_LISTEN_HOST).trim() :
+        '';
+    if (!fromEnv) {
+        return '127.0.0.1';
+    }
+    if (fromEnv === 'localhost') {
+        return '127.0.0.1';
+    }
+    if (fromEnv === '0.0.0.1') {
+        return '127.0.0.1';
+    }
+    return fromEnv;
+})();
 
 /**
  * Configuration the default port.
@@ -152,18 +169,50 @@ class OpenBlockLink extends Emitter{
      * @param {string} host - the host to listen.
      */
     listen (port, host) {
-        if (port) {
-            this._port = port;
+        if (port && Number(port) !== DEFAULT_PORT) {
+            console.warn(
+                `[link] ignore non-default port ${port}; forced to ${DEFAULT_PORT} in client-local mode`
+            );
         }
+        this._port = DEFAULT_PORT;
         if (host) {
             this._host = host;
         }
 
         this._httpServer.on('request', (request, res) => {
-            if (request.url === '/') {
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.end(SERVER_NAME);
+            // Chrome Private Network Access (PNA): a page on a "public" host (e.g. deployed editor IP)
+            // connecting to loopback (127.0.0.1) may send OPTIONS with
+            // Access-Control-Request-Private-Network: true first. Without this response, the WebSocket
+            // handshake to /windy/* can be blocked even though Windify Link is running locally.
+            // @see https://developer.chrome.com/blog/private-network-access-preflight
+            const pnaHeaders = {
+                'Access-Control-Allow-Private-Network': 'true',
+                'Access-Control-Allow-Origin': '*'
+            };
+            if (request.method === 'OPTIONS') {
+                res.writeHead(204, {
+                    ...pnaHeaders,
+                    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+                    'Access-Control-Allow-Headers': request.headers['access-control-request-headers'] || '*'
+                });
+                res.end();
+                return;
             }
+            if (request.method === 'HEAD' && request.url === '/') {
+                res.writeHead(200, pnaHeaders);
+                res.end();
+                return;
+            }
+            if (request.url === '/' && request.method === 'GET') {
+                res.writeHead(200, {
+                    ...pnaHeaders,
+                    'Content-Type': 'text/html'
+                });
+                res.end(SERVER_NAME);
+                return;
+            }
+            res.writeHead(404, pnaHeaders);
+            res.end();
         });
 
         this._httpServer.on('error', e => {
@@ -183,7 +232,7 @@ class OpenBlockLink extends Emitter{
             });
         });
 
-        this._httpServer.listen(this._port, '0.0.0.0', () => {
+        this._httpServer.listen(this._port, this._host, () => {
             this.emit('ready');
             console.info(clc.green(`WinLink link server start successfully, socket listen on: http://${this._host}:${this._port}`));
         });

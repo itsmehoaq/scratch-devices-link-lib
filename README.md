@@ -8,6 +8,8 @@ npm run fetch
 npm start
 ```
 
+Listen host: default `0.0.0.0` (all interfaces). Loopback-only: `set WINDY_LINK_LISTEN_HOST=127.0.0.1` then `npm start`. The address `0.0.0.1` is not valid for TCP bind.
+
 ### ESP32 binary flashing & device scan
 
 The link server can flash a triple of pre-compiled ESP32 bins
