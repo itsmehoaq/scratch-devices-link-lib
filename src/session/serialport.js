@@ -1,3 +1,4 @@
+const os = require('os');
 const {SerialPort} = require('serialport');
 const ansi = require('ansi-string');
 
@@ -7,16 +8,18 @@ const Esp32 = require('../upload/esp32');
 const usbId = require('../lib/usb-id');
 
 const PERIPHERAL_UNPLUG_CHECK_INTERVAL = 100;
-/** Treat as unplug only after this many consecutive polls see the port closed. */
-const PERIPHERAL_UNPLUG_CLOSED_STREAK = 5;
-/** Ignore transient close/reboot gaps right after the port is opened (e.g. ESP32 RTC WDT reset). */
+/** Debounce brief COM close gaps (sensor hot-plug / ESP reset / Windows USB). */
+const PERIPHERAL_UNPLUG_CLOSED_STREAK = os.platform() === 'win32' ? 15 : 8;
 const POST_OPEN_UNPLUG_GRACE_MS = 2500;
 
 const POST_FLASH_RECONNECT_INITIAL_DELAY_MS = 600;
 const POST_FLASH_RECONNECT_ATTEMPTS = 12;
 const POST_FLASH_RECONNECT_RETRY_DELAY_MS = 450;
-const TRANSIENT_RECONNECT_ATTEMPTS = 8;
-const TRANSIENT_RECONNECT_DELAY_MS = 400;
+const TRANSIENT_RECONNECT_ATTEMPTS = 12;
+const TRANSIENT_RECONNECT_DELAY_MS = os.platform() === 'win32' ? 500 : 400;
+const PORT_LIST_POLL_INTERVAL_MS = 250;
+const PORT_LIST_RECONNECT_MAX_WAIT_MS = os.platform() === 'win32' ? 18000 : 12000;
+const ESP_RECONNECT_VENDOR_IDS = ['303A', '10C4', '1A86'];
 
 /** Default timeout for a `scanDevices` request waiting on JSON `{devices:[...]}`. */
 const SCAN_DEVICES_DEFAULT_TIMEOUT_MS = 10000;
@@ -46,20 +49,88 @@ class SerialportSession extends Session {
         this._unplugGraceUntil = 0;
         this._unplugClosedStreak = 0;
         this._recoveringTransientClose = false;
+        this._intentionalDisconnect = false;
         this._scanContext = null;
     }
 
-    /**
-     * Refresh cached discovery entry for a COM path (needed after flash when the device resets).
-     * @param {string} path - peripheralId / SerialPort path.
-     */
-    async _refreshReportedPeripheralByPath (path) {
-        const list = await SerialPort.list();
-        const device = list.find(d => d.path === path);
-        if (!device) {
-            throw new Error(`Serial port not listed yet: ${path}`);
+    _normalizeUsbId (raw) {
+        return String(raw || '').replace(/^0x/i, '').toUpperCase();
+    }
+
+    _comNum (serialPath) {
+        const m = /COM(\d+)/i.exec(serialPath || '');
+        return m ? Number(m[1]) : -1;
+    }
+
+    async _resolveReconnectPort (preferredPath) {
+        if (!preferredPath) {
+            throw new Error('Missing serial path for reconnect');
         }
-        this.reportedPeripherals[path] = device;
+        const cached = this.reportedPeripherals[preferredPath];
+        const preferredVid = this._normalizeUsbId(cached && cached.vendorId);
+        const preferredPid = this._normalizeUsbId(cached && cached.productId);
+        const deadline = Date.now() + PORT_LIST_RECONNECT_MAX_WAIT_MS;
+
+        while (Date.now() < deadline) {
+            const list = await SerialPort.list();
+            const exact = list.find(d => d.path === preferredPath);
+            if (exact) {
+                this.reportedPeripherals[preferredPath] = exact;
+                return {device: exact, path: preferredPath};
+            }
+
+            if (preferredVid) {
+                const vidMatches = list.filter(d => {
+                    const vid = this._normalizeUsbId(d.vendorId);
+                    const pid = this._normalizeUsbId(d.productId);
+                    if (vid !== preferredVid || !d.path) {
+                        return false;
+                    }
+                    return !preferredPid || pid === preferredPid;
+                });
+                if (vidMatches.length >= 1) {
+                    const prefCom = this._comNum(preferredPath);
+                    vidMatches.sort((a, b) => {
+                        if (prefCom > 0) {
+                            const da = Math.abs(this._comNum(a.path) - prefCom);
+                            const db = Math.abs(this._comNum(b.path) - prefCom);
+                            if (da !== db) {
+                                return da - db;
+                            }
+                        }
+                        return this._comNum(b.path) - this._comNum(a.path);
+                    });
+                    const device = vidMatches[0];
+                    this.reportedPeripherals[device.path] = device;
+                    return {device, path: device.path};
+                }
+            }
+
+            const espMatches = list.filter(d => {
+                const vid = this._normalizeUsbId(d.vendorId);
+                return ESP_RECONNECT_VENDOR_IDS.includes(vid) && d.path;
+            });
+            if (espMatches.length === 1) {
+                const device = espMatches[0];
+                this.reportedPeripherals[device.path] = device;
+                return {device, path: device.path};
+            }
+
+            await delay(PORT_LIST_POLL_INTERVAL_MS);
+        }
+
+        throw new Error(`Serial port not listed yet: ${preferredPath}`);
+    }
+
+    async _refreshReportedPeripheralByPath (path) {
+        const {device, path: resolvedPath} = await this._resolveReconnectPort(path);
+        if (resolvedPath !== path && this.peripheralParams) {
+            this.peripheralParams.peripheralId = resolvedPath;
+            this.sendstd(
+                `${ansi.yellow_dark}[serialport] Port re-enumerated as ${resolvedPath} (was ${path}).\n`
+            );
+        }
+        return device;
     }
 
     /**
@@ -109,7 +180,7 @@ class SerialportSession extends Session {
             }
             break;
         case 'disconnect':
-            await this.disconnect();
+            await this.disconnect(true);
             completion(null, null);
             break;
         case 'updateBaudrate':
@@ -179,6 +250,39 @@ class SerialportSession extends Session {
      * Map serial open failures to user-facing connectError where useful.
      * @param {Error} openErr - error from SerialPort.open.
      */
+    /**
+     * True when a serialport error is usually a transient reset/glitch, not a user unplug.
+     * @param {Error} error
+     * @returns {boolean}
+     */
+    _isTransientSerialError (error) {
+        const msg = (error && error.message) ? error.message : String(error);
+        return /disconnected|not open|FILE_NOT_FOUND|Operation aborted|EBADF|ENOENT|Access denied|Unknown error code 31|Resource temporarily unavailable|EAGAIN|Framing|Break|Overrun|Parity/i.test(msg);
+    }
+
+    /**
+     * Try reconnect after a brief port close or driver error (e.g. hot-plugging I2C sensors).
+     */
+    _scheduleTransientRecovery (reason) {
+        if (this.isInDisconnect || this._recoveringTransientClose || this._intentionalDisconnect) {
+            return;
+        }
+        if (!this.peripheralParams || this.tool) {
+            return;
+        }
+        if (Date.now() < this._unplugGraceUntil) {
+            return;
+        }
+        if (this.connectStateDetectorTimer) {
+            clearInterval(this.connectStateDetectorTimer);
+            this.connectStateDetectorTimer = null;
+        }
+        this._unplugClosedStreak = 0;
+        const label = reason ? `: ${reason}` : '';
+        console.warn(`[serialport] scheduling transient reconnect${label}`);
+        this._recoverFromTransientClose();
+    }
+
     _notifyConnectOpenFailure (openErr) {
         const msg = (openErr && openErr.message) ? openErr.message : String(openErr);
         if (msg.includes('Access denied')) {
@@ -347,6 +451,7 @@ class SerialportSession extends Session {
 
                         this.peripheral = port;
                         this.peripheralParams = params;
+                        this._intentionalDisconnect = false;
 
                         this._unplugClosedStreak = 0;
                         this._unplugGraceUntil = Date.now() + POST_OPEN_UNPLUG_GRACE_MS;
@@ -365,7 +470,7 @@ class SerialportSession extends Session {
                                     clearInterval(this.connectStateDetectorTimer);
                                     this.connectStateDetectorTimer = null;
                                     this._unplugClosedStreak = 0;
-                                    this._recoverFromTransientClose();
+                                    this._scheduleTransientRecovery('port closed');
                                 }
                             } else {
                                 this._unplugClosedStreak = 0;
@@ -378,10 +483,26 @@ class SerialportSession extends Session {
                             this.onMessageCallback(rev);
                         });
 
+                        port.on('close', () => {
+                            this._scheduleTransientRecovery('close event');
+                        });
+
                         port.on('error', error => {
-                            console.log('OpenBlock Link Error:', error);
-                            this.disconnect();
-                            this.sendRemoteRequest('peripheralUnplug', null);
+                            console.warn('OpenBlock Link serial error:', error);
+                            if (this.isInDisconnect || this._recoveringTransientClose) {
+                                return;
+                            }
+                            const msg = (error && error.message) ? error.message : String(error);
+                            if (this._isTransientSerialError(error) ||
+                                !this.peripheral ||
+                                this.peripheral.isOpen === false) {
+                                this._scheduleTransientRecovery(msg);
+                                return;
+                            }
+                            // Port still reports open — log and keep session (avoid false unplug on noise).
+                            this.sendstd(
+                                `${ansi.yellow_dark}[serialport] Serial warning (still connected): ${msg}\n`
+                            );
                         });
 
                         resolve();
@@ -572,8 +693,11 @@ class SerialportSession extends Session {
         this.sendstd(`${ansi.clear}Serial log stream resumed after flash reconnect.\n`);
     }
 
-    disconnect () {
+    disconnect (intentional = false) {
         this.isInDisconnect = true;
+        if (intentional) {
+            this._intentionalDisconnect = true;
+        }
         return new Promise((resolve, reject) => {
             if (this.peripheral && this.peripheral.isOpen === true) {
                 if (this.connectStateDetectorTimer) {
@@ -588,19 +712,31 @@ class SerialportSession extends Session {
                         peripheral.close(error => {
                             if (error) {
                                 this.isInDisconnect = false;
+                                if (!intentional) {
+                                    this._intentionalDisconnect = false;
+                                }
                                 return reject(Error(error));
                             }
                             this.peripheral = null;
+                            if (intentional) {
+                                this.peripheralParams = null;
+                            }
                             this.isInDisconnect = false;
                             return resolve();
                         });
                     });
                 } catch (err) {
                     this.isInDisconnect = false;
+                    if (!intentional) {
+                        this._intentionalDisconnect = false;
+                    }
                     return reject(err);
                 }
             } else {
                 this.peripheral = null;
+                if (intentional) {
+                    this.peripheralParams = null;
+                }
                 return resolve();
             }
         });
