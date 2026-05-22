@@ -82,7 +82,6 @@ class Esp32 {
         );
         try {
             if (fs.existsSync(baseDir)) {
-                // Newest version first (lexicographic — e.g. 4.9.dev3 > 4.5).
                 const versions = fs.readdirSync(baseDir)
                     .filter(name => fs.statSync(path.join(baseDir, name)).isDirectory())
                     .sort()
@@ -90,7 +89,7 @@ class Esp32 {
                 for (const ver of versions) {
                     const candidate = path.join(baseDir, ver, exeName);
                     if (fs.existsSync(candidate)) {
-                        return candidate;
+                        return path.resolve(candidate);
                     }
                 }
             }

@@ -5,6 +5,7 @@ const ansi = require('ansi-string');
 const yaml = require('js-yaml');
 const os = require('os');
 const {SerialPort} = require('serialport');
+const {resolveToolBinary} = require('../lib/runtime-paths');
 
 const ARDUINO_CLI_STDOUT_GREEN_START = /Reading \||Writing \|/g;
 const ARDUINO_CLI_STDOUT_GREEN_END = /%/g;
@@ -40,7 +41,10 @@ class Arduino {
         this._configFilePath = path.join(this._userDataPath, 'arduino/arduino-cli.yaml');
         this._projectFilePath = path.join(this._userDataPath, 'arduino', projectPathName);
 
-        this._arduinoCliPath = path.join(this._arduinoPath, 'arduino-cli');
+        this._arduinoCliPath = resolveToolBinary(
+            toolsPath,
+            path.join('Arduino', 'arduino-cli')
+        );
 
         this._codeFolderPath = path.join(this._projectFilePath, 'code');
         this._codeFilePath = path.join(this._codeFolderPath, 'code.ino');
@@ -290,7 +294,20 @@ class Arduino {
         return Math.min(1, Math.max(0, n / 100));
     }
 
+    _attachSpawnError (proc, reject, label) {
+        proc.on('error', err => {
+            reject(new Error(`${label} failed to start ${this._arduinoCliPath}: ${err.message}`));
+        });
+    }
+
     initArduinoCli () {
+        if (!fs.existsSync(this._arduinoCliPath)) {
+            this._sendstd(
+                `${ansi.red}arduino-cli not found: ${this._arduinoCliPath}\n`
+            );
+            return;
+        }
+
         // try to init the arduino cli config.
         spawnSync(this._arduinoCliPath, ['config', 'init', '--dest-file', this._configFilePath]);
 
@@ -383,8 +400,16 @@ class Arduino {
                 }
             }
 
-            const arduinoCli = spawn(this._arduinoCliPath, args);
+            if (!fs.existsSync(this._arduinoCliPath)) {
+                return reject(new Error(`arduino-cli not found: ${this._arduinoCliPath}`));
+            }
+
+            const arduinoCli = spawn(this._arduinoCliPath, args, {
+                cwd: path.dirname(this._arduinoCliPath),
+                windowsHide: true
+            });
             this._sendstd(`Start building...\n`);
+            this._attachSpawnError(arduinoCli, reject, 'Build');
 
             arduinoCli.stderr.on('data', buf => {
                 const data = buf.toString();
@@ -753,8 +778,16 @@ class Arduino {
                 args.push(this._codeFolderPath);
             }
 
+            if (!fs.existsSync(this._arduinoCliPath)) {
+                return reject(new Error(`arduino-cli not found: ${this._arduinoCliPath}`));
+            }
+
             let rawOutput = '';
-            const arduinoCli = spawn(this._arduinoCliPath, args);
+            const arduinoCli = spawn(this._arduinoCliPath, args, {
+                cwd: path.dirname(this._arduinoCliPath),
+                windowsHide: true
+            });
+            this._attachSpawnError(arduinoCli, reject, 'Upload');
 
             arduinoCli.stderr.on('data', buf => {
                 let data = buf.toString();

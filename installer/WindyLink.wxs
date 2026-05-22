@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="Windy Link"
+    Language="1033"
+    Version="$(var.ProductVersion)"
+    Manufacturer="Kannoki"
+    UpgradeCode="A7B3C4D5-E6F7-4890-ABCD-123456789ABC">
+    <Package
+      InstallerVersion="500"
+      Compressed="yes"
+      InstallScope="perMachine"
+      Platform="x64"
+      Description="Windy Link local hardware server"
+      Comments="Windy Link local hardware server for Scratch/Windify device linking" />
+
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of Windy Link is already installed."
+      AllowSameVersionUpgrades="yes" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Windy Link" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Windy Link" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcut" Guid="B8C4D5E6-F7A8-4901-BCDE-234567890ABC">
+        <Shortcut
+          Id="ApplicationStartMenuShortcut"
+          Name="Windy Link"
+          Description="Start Windy Link local hardware server"
+          Target="[INSTALLFOLDER]WindyLink.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\Kannoki\WindyLink"
+          Name="installed"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="Windy Link" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="ApplicationShortcut" />
+    </Feature>
+  </Product>
+</Wix>

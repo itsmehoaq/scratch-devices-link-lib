@@ -3,6 +3,9 @@
   "version": "0.2.0",
   "description": "",
   "main": "src/index.js",
+  "bin": {
+    "windy-link": "./bin/windy-link.js"
+  },
   "scripts": {
     "fetch": "rimraf tools firmwares && node script/download-tools.js && node script/download-firmwares.js",
     "fetch:small": "npm run fetch && npm run tools:prune && npm run tools:archive",
@@ -16,14 +19,37 @@
     "tools:archive": "node script/archive-tools.js --overwrite",
     "tools:prune": "node script/prune-tools.js --apply",
     "tools:prune:dry-run": "node script/prune-tools.js",
-    "commitlint": "commitlint --from=HEAD~1 --to=HEAD"
+    "commitlint": "commitlint --from=HEAD~1 --to=HEAD",
+    "build:exe": "pkg . --out-path dist",
+    "build:exe:win": "pkg . --targets node18-win-x64 --output dist/WindyLink.exe",
+    "package:dist": "node script/package-dist.js",
+    "build:msi": "node script/build-msi.js",
+    "release:win": "npm run build:exe:win && npm run package:dist",
+    "release:msi": "npm run build:exe:win && npm run package:dist && npm run build:msi"
+  },
+  "pkg": {
+    "scripts": [
+      "src/**/*.js",
+      "bin/**/*.js"
+    ],
+    "assets": [
+      "node_modules/serialport/**/*",
+      "node_modules/@serialport/**/*",
+      "node_modules/@serialport/bindings-cpp/prebuilds/**/*",
+      "node_modules/7zip-bin/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Kannoki/scratch-devices-link-lib.git"
   },
   "keywords": [
-    "scratch3.0" ],
+    "scratch3.0"
+  ],
   "author": "Kannoki",
   "license": "MIT",
   "bugs": {
@@ -48,6 +74,7 @@
   "devDependencies": {
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.1",
+    "@yao-pkg/pkg": "^6.19.0",
     "babel-eslint": "^10.0.1",
     "eslint": "^5.3.0",
     "eslint-config-scratch": "^5.0.0",

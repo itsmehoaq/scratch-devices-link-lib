@@ -10,6 +10,62 @@ npm start
 
 Listen host: default `0.0.0.0` (all interfaces). Loopback-only: `set WINDY_LINK_LISTEN_HOST=127.0.0.1` then `npm start`. The address `0.0.0.1` is not valid for TCP bind.
 
+### Build Windows terminal exe
+
+```powershell
+npm install
+npm run fetch
+npm run release:win
+```
+
+Output staging folder (portable run):
+
+```
+dist/staging/Windy Link/
+├── WindyLink.exe
+├── tools/
+└── firmwares/
+```
+
+Run from that folder so build/upload tools resolve correctly:
+
+```powershell
+cd "dist\staging\Windy Link"
+.\WindyLink.exe
+```
+
+If tools are missing beside the exe, upload will fail instead of crashing the server.
+
+After MSI install, user data (build cache) is stored in `%LOCALAPPDATA%\WindyLink`.
+
+### Build Windows MSI installer
+
+Prerequisite on the build machine:
+
+```powershell
+winget install WiXToolset.WiXToolset
+```
+
+Build the MSI (uses pruned tools for a smaller installer):
+
+```powershell
+npm install
+npm run release:msi
+```
+
+Output:
+
+```
+dist/WindyLink-0.2.0-x64.msi
+```
+
+Install flow:
+
+1. Double-click the MSI
+2. Files install to `C:\Program Files\Windy Link\`
+3. Start **Windy Link** from the Start Menu
+4. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
+
 ### ESP32 binary flashing & device scan
 
 The link server can flash a triple of pre-compiled ESP32 bins

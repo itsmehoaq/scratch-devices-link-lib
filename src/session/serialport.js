@@ -21,6 +21,14 @@ const PORT_LIST_POLL_INTERVAL_MS = 250;
 const PORT_LIST_RECONNECT_MAX_WAIT_MS = os.platform() === 'win32' ? 18000 : 12000;
 const ESP_RECONNECT_VENDOR_IDS = ['303A', '10C4', '1A86'];
 
+/** Espressif native USB VID for ESP32-S3 OTG / Serial-JTAG (not UART bridge). */
+const ESP32S3_OTG_VENDOR_ID = '303A';
+/** Known ESP32-S3 native USB product IDs (OTG port, not CH340/CP2102 UART). */
+const ESP32S3_OTG_PRODUCT_IDS = new Set([
+    '1001', // USB Serial/JTAG (Hardware CDC on boot)
+    '0002' // USB CDC ACM on some ESP32-S3 builds
+]);
+
 /** Default timeout for a `scanDevices` request waiting on JSON `{devices:[...]}`. */
 const SCAN_DEVICES_DEFAULT_TIMEOUT_MS = 10000;
 /** Cap to keep the scan accumulator from growing unbounded while waiting for JSON. */
@@ -60,6 +68,21 @@ class SerialportSession extends Session {
     _comNum (serialPath) {
         const m = /COM(\d+)/i.exec(serialPath || '');
         return m ? Number(m[1]) : -1;
+    }
+
+    /**
+     * Why: Windify ESP32-S3 boards expose runtime serial on native USB OTG,
+     * not on external UART bridge chips (CH340/CP2102).
+     * @param {object} device serialport list entry.
+     * @returns {boolean}
+     */
+    _isEsp32S3OtgDevice (device) {
+        const vid = this._normalizeUsbId(device && device.vendorId);
+        const pid = this._normalizeUsbId(device && device.productId);
+        if (vid !== ESP32S3_OTG_VENDOR_ID) {
+            return false;
+        }
+        return ESP32S3_OTG_PRODUCT_IDS.has(pid);
     }
 
     async _resolveReconnectPort (preferredPath) {
@@ -372,6 +395,9 @@ class SerialportSession extends Session {
                 const pnpid = `USB\\VID_${vendorId}&PID_${productId}`;
 
                 if (filters.pnpid.includes('*') || filters.pnpid.includes(pnpid)) {
+                    if (!this._isEsp32S3OtgDevice(device)) {
+                        return;
+                    }
                     currentScanPaths.add(device.path);
                     const name = this._formatDiscoveredName(device, pnpid);
                     const payload = this._buildDiscoveryPayload(device, pnpid, name);

@@ -8,3 +8,5 @@ tools/
 tmp/
 
 package-lock.json
+dist/
+installer/Files.wxs
