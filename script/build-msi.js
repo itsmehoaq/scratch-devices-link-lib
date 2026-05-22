@@ -5,11 +5,12 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..');
 const pkg = require('../package.json');
 const productVersion = `${pkg.version}.0`;
-const stagingDir = path.join(repoRoot, 'dist', 'staging', 'Windy Link');
+const stagingDir = path.join(repoRoot, 'dist', 'staging', 'Future Academy');
 const workDir = path.join(repoRoot, 'dist', 'installer-work');
 const filesWxs = path.join(repoRoot, 'installer', 'Files.wxs');
 const productWxs = path.join(repoRoot, 'installer', 'WindyLink.wxs');
-const msiOut = path.join(repoRoot, 'dist', `WindyLink-${pkg.version}-x64.msi`);
+const iconSource = path.join(repoRoot, 'assets', 'FutureAcademy.ico');
+const msiOut = path.join(repoRoot, 'dist', `FutureAcademy-${pkg.version}-x64.msi`);
 
 const WIX3_BIN_DIRS = [
     'C:\\Program Files (x86)\\WiX Toolset v3.14\\bin',
@@ -67,6 +68,12 @@ if (!fs.existsSync(stagingDir)) {
     process.exit(1);
 }
 
+if (!fs.existsSync(iconSource)) {
+    console.error(`Missing icon: ${iconSource}`);
+    console.error('Run npm run generate:icon first.');
+    process.exit(1);
+}
+
 const heat = resolveWix3Tool('heat');
 const candle = resolveWix3Tool('candle');
 const light = resolveWix3Tool('light');
@@ -106,6 +113,7 @@ console.log('Compiling WiX source...');
 run(candle, [
     `-dStagingSource=${stagingDir}`,
     `-dProductVersion=${productVersion}`,
+    `-dIconSource=${iconSource}`,
     '-arch',
     'x64',
     '-out',

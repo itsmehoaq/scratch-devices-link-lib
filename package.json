@@ -1,7 +1,7 @@
 {
-  "name": "scratch-devices-link-lib",
+  "name": "Windify Block",
   "version": "0.2.0",
-  "description": "",
+  "description": "Future Academy local hardware link server for https://steam.windify.edu.vn/",
   "main": "src/index.js",
   "bin": {
     "windy-link": "./bin/windy-link.js"
@@ -20,12 +20,13 @@
     "tools:prune": "node script/prune-tools.js --apply",
     "tools:prune:dry-run": "node script/prune-tools.js",
     "commitlint": "commitlint --from=HEAD~1 --to=HEAD",
+    "generate:icon": "node script/generate-icon.js",
     "build:exe": "pkg . --out-path dist",
-    "build:exe:win": "pkg . --targets node18-win-x64 --output dist/WindyLink.exe",
+    "build:exe:win": "npm run generate:icon && pkg . --targets node18-win-x64 --output dist/WindyLink.exe",
     "package:dist": "node script/package-dist.js",
     "build:msi": "node script/build-msi.js",
     "release:win": "npm run build:exe:win && npm run package:dist",
-    "release:msi": "npm run build:exe:win && npm run package:dist && npm run build:msi"
+    "release:msi": "npm run generate:icon && npm run build:exe:win && npm run package:dist && npm run build:msi"
   },
   "pkg": {
     "scripts": [
@@ -79,7 +80,10 @@
     "eslint": "^5.3.0",
     "eslint-config-scratch": "^5.0.0",
     "jsdoc": "^3.6.6",
-    "rimraf": "^3.0.2"
+    "png-to-ico": "^3.0.1",
+    "rcedit": "^5.0.2",
+    "rimraf": "^3.0.2",
+    "sharp": "^0.34.5"
   },
   "commitlint": {
     "extends": [

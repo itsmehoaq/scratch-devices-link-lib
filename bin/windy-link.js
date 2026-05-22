@@ -8,6 +8,11 @@ const {
     resolveUserDataPath,
     validateToolsLayout
 } = require('../src/lib/runtime-paths');
+const {
+    resolveStartupUrl,
+    shouldOpenStartupUrl,
+    openUrl
+} = require('../src/lib/open-url');
 
 const baseDir = resolveRuntimeBaseDir();
 const userDataPath = resolveUserDataPath(baseDir);
@@ -41,7 +46,12 @@ const link = new OpenBlockLink(userDataPath, toolsPath);
 link.listen();
 
 link.on('ready', () => {
-    console.info('Windy Link server is ready.');
+    console.info('Future Academy link server is ready.');
+    if (shouldOpenStartupUrl()) {
+        const startupUrl = resolveStartupUrl();
+        console.info(`[link] opening ${startupUrl}`);
+        openUrl(startupUrl);
+    }
 });
 
 link.on('port-in-use', () => {

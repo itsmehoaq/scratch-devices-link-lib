@@ -2,30 +2,33 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
     Id="*"
-    Name="Windy Link"
+    Name="Future Academy"
     Language="1033"
     Version="$(var.ProductVersion)"
-    Manufacturer="Kannoki"
+    Manufacturer="Windify"
     UpgradeCode="A7B3C4D5-E6F7-4890-ABCD-123456789ABC">
     <Package
       InstallerVersion="500"
       Compressed="yes"
       InstallScope="perMachine"
       Platform="x64"
-      Description="Windy Link local hardware server"
-      Comments="Windy Link local hardware server for Scratch/Windify device linking" />
+      Description="Future Academy local hardware link server"
+      Comments="Future Academy local hardware link server for https://steam.windify.edu.vn/" />
 
     <MajorUpgrade
-      DowngradeErrorMessage="A newer version of Windy Link is already installed."
+      DowngradeErrorMessage="A newer version of Future Academy is already installed."
       AllowSameVersionUpgrades="yes" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
+    <Icon Id="FutureAcademyIcon" SourceFile="$(var.IconSource)" />
+    <Property Id="ARPPRODUCTICON" Value="FutureAcademyIcon" />
+
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLFOLDER" Name="Windy Link" />
+        <Directory Id="INSTALLFOLDER" Name="Future Academy" />
       </Directory>
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="ApplicationProgramsFolder" Name="Windy Link" />
+        <Directory Id="ApplicationProgramsFolder" Name="Future Academy" />
       </Directory>
     </Directory>
 
@@ -33,14 +36,16 @@
       <Component Id="ApplicationShortcut" Guid="B8C4D5E6-F7A8-4901-BCDE-234567890ABC">
         <Shortcut
           Id="ApplicationStartMenuShortcut"
-          Name="Windy Link"
-          Description="Start Windy Link local hardware server"
+          Name="Future Academy"
+          Description="Start Future Academy local hardware server"
           Target="[INSTALLFOLDER]WindyLink.exe"
-          WorkingDirectory="INSTALLFOLDER" />
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="FutureAcademyIcon"
+          IconIndex="0" />
         <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
         <RegistryValue
           Root="HKCU"
-          Key="Software\Kannoki\WindyLink"
+          Key="Software\Windify\FutureAcademy"
           Name="installed"
           Type="integer"
           Value="1"
@@ -48,7 +53,7 @@
       </Component>
     </DirectoryRef>
 
-    <Feature Id="MainFeature" Title="Windy Link" Level="1">
+    <Feature Id="MainFeature" Title="Future Academy" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="ApplicationShortcut" />
     </Feature>

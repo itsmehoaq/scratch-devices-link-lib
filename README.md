@@ -1,4 +1,6 @@
-# Custommize version of winblock for only Adruino Uno & ESP32-S3
+# Future Academy — Windify Block Link Server
+
+Local hardware link server for [Future Academy / Windblock 3.0 GUI](https://steam.windify.edu.vn/).
 
 ### Instructions
 ```bash
@@ -9,6 +11,13 @@ npm start
 ```
 
 Listen host: default `0.0.0.0` (all interfaces). Loopback-only: `set WINDY_LINK_LISTEN_HOST=127.0.0.1` then `npm start`. The address `0.0.0.1` is not valid for TCP bind.
+
+When launched as `WindyLink.exe`, the app opens **https://steam.windify.edu.vn/** in the default browser after the link server is ready.
+
+Optional env vars:
+
+- `WINDY_STARTUP_URL` — override startup browser URL
+- `WINDY_OPEN_STARTUP_URL=0` — disable opening the browser on start
 
 ### Build Windows terminal exe
 
@@ -21,7 +30,7 @@ npm run release:win
 Output staging folder (portable run):
 
 ```
-dist/staging/Windy Link/
+dist/staging/Future Academy/
 ├── WindyLink.exe
 ├── tools/
 └── firmwares/
@@ -30,7 +39,7 @@ dist/staging/Windy Link/
 Run from that folder so build/upload tools resolve correctly:
 
 ```powershell
-cd "dist\staging\Windy Link"
+cd "dist\staging\Future Academy"
 .\WindyLink.exe
 ```
 
@@ -46,25 +55,28 @@ Prerequisite on the build machine:
 winget install WiXToolset.WiXToolset
 ```
 
-Build the MSI (uses pruned tools for a smaller installer):
+Build the MSI (icon appears on Start Menu shortcut and Add/Remove Programs):
 
 ```powershell
 npm install
 npm run release:msi
 ```
 
+Note: do not run `script/apply-exe-icon.js` on pkg-built `WindyLink.exe` — it corrupts the binary. The Future Academy icon is applied via the MSI installer.
+
 Output:
 
 ```
-dist/WindyLink-0.2.0-x64.msi
+dist/FutureAcademy-0.2.0-x64.msi
 ```
 
 Install flow:
 
 1. Double-click the MSI
-2. Files install to `C:\Program Files\Windy Link\`
-3. Start **Windy Link** from the Start Menu
-4. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
+2. Files install to `C:\Program Files\Future Academy\`
+3. Start **Future Academy** from the Start Menu (Future Academy logo icon)
+4. Browser opens https://steam.windify.edu.vn/
+5. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
 
 ### ESP32 binary flashing & device scan
 
