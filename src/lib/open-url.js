@@ -1,6 +1,6 @@
 const {spawn} = require('child_process');
 
-const DEFAULT_STARTUP_URL = 'https://steam.windify.edu.vn/';
+const DEFAULT_STARTUP_URL = 'https://stem.windify.edu.vn/';
 
 /**
  * Resolve startup URL from env with Future Academy default.

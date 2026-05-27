@@ -207,7 +207,14 @@ class SerialportSession extends Session {
             completion(null, null);
             break;
         case 'updateBaudrate':
-            completion(await this.updateBaudrate(params), null);
+            try {
+                completion(await this.updateBaudrate(params), null);
+            } catch (err) {
+                const message = (err && err.message) ? err.message : String(err);
+                console.warn(`[serialport] updateBaudrate failed: ${message}`);
+                this.sendRemoteRequest('connectError', {message});
+                completion(null, null);
+            }
             break;
         case 'write':
             completion(await this.write(params), null);
@@ -320,6 +327,18 @@ class SerialportSession extends Session {
         if (msg.includes('Resource temporarily unavailable') || msg.includes('EAGAIN')) {
             this.sendRemoteRequest('connectError', {message: 'Resource temporarily unavailable'});
         }
+    }
+
+    /**
+     * Why: baud-rate changes can arrive before connect finishes; warn the VM
+     * without rejecting the RPC (rejection disconnects the peripheral).
+     * @param {string} title - short operation label.
+     * @param {string} detail - human-readable reason.
+     */
+    _warnSerialOperationSkipped (title, detail) {
+        const message = `${title}: ${detail}`;
+        console.warn(`[serialport] ${message}`);
+        this.sendRemoteRequest('connectError', {message});
     }
 
     /**
@@ -595,6 +614,17 @@ class SerialportSession extends Session {
         if (this._scanContext) {
             this._feedScanContext(rev);
         }
+        try {
+            const text = rev.toString('utf8');
+            for (const line of text.split(/\r?\n/)) {
+                const trimmed = line.trim();
+                if (trimmed.includes('WINDIFY_MOBILE_')) {
+                    this.sendRemoteRequest('mobileUiSerialLine', {line: trimmed});
+                }
+            }
+        } catch (_e) {
+            // ignore decode errors on binary chunks
+        }
     }
 
     /**
@@ -655,27 +685,57 @@ class SerialportSession extends Session {
     }
 
     updateBaudrate (params) {
-        return new Promise((resolve, reject) => {
+        return new Promise(resolve => {
             if (this.isInDisconnect) {
                 return resolve();
             }
-            this.peripheralParams.peripheralConfig.config.baudRate = params.baudRate;
+            if (!this.peripheral || this.peripheral.isOpen !== true) {
+                this._warnSerialOperationSkipped(
+                    'Baud rate update skipped',
+                    'serial port is not open'
+                );
+                return resolve();
+            }
+            const config = this.peripheralParams &&
+                this.peripheralParams.peripheralConfig &&
+                this.peripheralParams.peripheralConfig.config;
+            if (!config) {
+                this._warnSerialOperationSkipped(
+                    'Baud rate update skipped',
+                    'device connection is not ready'
+                );
+                return resolve();
+            }
+            if (!params || typeof params.baudRate === 'undefined') {
+                this._warnSerialOperationSkipped(
+                    'Baud rate update skipped',
+                    'missing baud rate'
+                );
+                return resolve();
+            }
+
+            config.baudRate = params.baudRate;
             this.peripheral.update(params, err => {
                 if (err) {
-                    return reject(new Error(`Error while attempting to update baudrate: ${err.message}`));
+                    this._warnSerialOperationSkipped(
+                        'Baud rate update failed',
+                        err.message || String(err)
+                    );
+                    return resolve();
                 }
 
-                const rts = (typeof this.peripheralParams.peripheralConfig.config.rts === 'undefined') ?
-                    true : this.peripheralParams.peripheralConfig.config.rts;
-                const dtr = (typeof this.peripheralParams.peripheralConfig.config.dtr === 'undefined') ?
-                    true : this.peripheralParams.peripheralConfig.config.dtr;
+                const rts = (typeof config.rts === 'undefined') ? true : config.rts;
+                const dtr = (typeof config.dtr === 'undefined') ? true : config.dtr;
 
                 // After update baudrate, the rts and dtr will be automatically modified,
                 // we have to set them again.
                 this.peripheral.set({rts: rts, dtr: dtr}, setErr => {
                     if (setErr) {
-                        this.sendRemoteRequest('peripheralUnplug', null);
-                        return reject(new Error(setErr));
+                        this._warnSerialOperationSkipped(
+                            'Baud rate update failed',
+                            setErr.message || String(setErr)
+                        );
+                        return resolve();
                     }
                     return resolve();
                 });

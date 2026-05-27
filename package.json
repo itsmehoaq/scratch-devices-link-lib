@@ -1,7 +1,7 @@
 {
   "name": "Windify Block",
   "version": "0.2.0",
-  "description": "Future Academy local hardware link server for https://steam.windify.edu.vn/",
+  "description": "Future Academy local hardware link server for https://stem.windify.edu.vn/",
   "main": "src/index.js",
   "bin": {
     "windy-link": "./bin/windy-link.js"
@@ -24,9 +24,10 @@
     "build:exe": "pkg . --out-path dist",
     "build:exe:win": "npm run generate:icon && pkg . --targets node18-win-x64 --output dist/WindyLink.exe",
     "package:dist": "node script/package-dist.js",
-    "build:msi": "node script/build-msi.js",
+    "prepare:installer-payload": "node script/prepare-installer-payload.js",
+    "build:setup": "node script/build-setup.js",
     "release:win": "npm run build:exe:win && npm run package:dist",
-    "release:msi": "npm run generate:icon && npm run build:exe:win && npm run package:dist && npm run build:msi"
+    "release:setup": "npm run build:exe:win && npm run prepare:installer-payload && npm run build:setup"
   },
   "pkg": {
     "scripts": [

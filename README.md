@@ -1,6 +1,6 @@
 # Future Academy — Windify Block Link Server
 
-Local hardware link server for [Future Academy / Windblock 3.0 GUI](https://steam.windify.edu.vn/).
+Local hardware link server for [Future Academy / Windblock 3.0 GUI](https://stem.windify.edu.vn/).
 
 ### Instructions
 ```bash
@@ -12,7 +12,7 @@ npm start
 
 Listen host: default `0.0.0.0` (all interfaces). Loopback-only: `set WINDY_LINK_LISTEN_HOST=127.0.0.1` then `npm start`. The address `0.0.0.1` is not valid for TCP bind.
 
-When launched as `WindyLink.exe`, the app opens **https://steam.windify.edu.vn/** in the default browser after the link server is ready.
+When launched as `WindyLink.exe`, the app opens **https://stem.windify.edu.vn/** in the default browser after the link server is ready.
 
 Optional env vars:
 
@@ -45,38 +45,41 @@ cd "dist\staging\Future Academy"
 
 If tools are missing beside the exe, upload will fail instead of crashing the server.
 
-After MSI install, user data (build cache) is stored in `%LOCALAPPDATA%\WindyLink`.
+After setup install, build tools are stored in `%ProgramData%\Windify\Future Academy\tools` and user data (build cache) is stored in `%LOCALAPPDATA%\WindyLink`.
 
-### Build Windows MSI installer
+### Build Windows Setup EXE installer
 
 Prerequisite on the build machine:
 
 ```powershell
-winget install WiXToolset.WiXToolset
+winget install JRSoftware.InnoSetup
 ```
 
-Build the MSI (icon appears on Start Menu shortcut and Add/Remove Programs):
+Build the setup installer (icon appears on Start Menu shortcut and Add/Remove Programs):
 
 ```powershell
 npm install
-npm run release:msi
+npm run fetch
+npm run release:setup
 ```
 
-Note: do not run `script/apply-exe-icon.js` on pkg-built `WindyLink.exe` — it corrupts the binary. The Future Academy icon is applied via the MSI installer.
+Note: do not run `script/apply-exe-icon.js` on pkg-built `WindyLink.exe` — it corrupts the binary. The Future Academy icon is applied via the Inno Setup installer.
 
 Output:
 
 ```
-dist/FutureAcademy-0.2.0-x64.msi
+dist/FutureAcademy-0.2.0-x64-setup.exe
 ```
 
 Install flow:
 
-1. Double-click the MSI
-2. Files install to `C:\Program Files\Future Academy\`
-3. Start **Future Academy** from the Start Menu (Future Academy logo icon)
-4. Browser opens https://steam.windify.edu.vn/
-5. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
+1. Double-click the setup EXE
+2. App files install to `C:\Program Files\Future Academy\`
+3. Build tools are extracted to `C:\ProgramData\Windify\Future Academy\tools\`
+4. Node.js LTS is installed silently if it is missing or older than v18
+5. Start **Future Academy** from the Start Menu (Future Academy logo icon)
+6. Browser opens https://stem.windify.edu.vn/
+7. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
 
 ### ESP32 binary flashing & device scan
 

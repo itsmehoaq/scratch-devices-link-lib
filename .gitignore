@@ -9,6 +9,6 @@ tmp/
 
 package-lock.json
 dist/
-installer/Files.wxs
+installer/assets/*.msi
 assets/.future-academy-square.png
 tools.7z

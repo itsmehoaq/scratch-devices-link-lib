@@ -2,6 +2,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const INSTALL_REGISTRY_KEY = 'HKLM\\Software\\Windify\\Future Academy';
+
 /**
  * Resolve runtime root beside the exe when packaged, repo root in dev.
  * @returns {string}
@@ -66,6 +68,54 @@ const resolveUserDataPath = baseDir => {
 };
 
 /**
+ * Read installer registry values written by the Inno Setup package.
+ * @returns {{installPath: string|null, toolsPath: string|null}|null}
+ */
+const readInstallRegistry = () => {
+    if (os.platform() !== 'win32') {
+        return null;
+    }
+
+    try {
+        const {execFileSync} = require('child_process'); // eslint-disable-line global-require
+        const output = execFileSync('reg', ['query', INSTALL_REGISTRY_KEY], {
+            encoding: 'utf8',
+            windowsHide: true
+        });
+        const readValue = name => {
+            const match = output.match(new RegExp(`${name}\\s+REG_SZ\\s+(.+)`, 'i'));
+            return match && match[1] ? match[1].trim() : null;
+        };
+        const installPath = readValue('InstallPath');
+        const toolsPath = readValue('ToolsPath');
+        if (!installPath && !toolsPath) {
+            return null;
+        }
+        return {installPath, toolsPath};
+    } catch (err) {
+        return null;
+    }
+};
+
+/**
+ * Resolve build/upload tools directory for dev, portable, and installed layouts.
+ * @param {string} baseDir runtime root beside the exe.
+ * @returns {string}
+ */
+const resolveToolsPath = baseDir => {
+    if (process.env.WINDY_TOOLS_PATH) {
+        return process.env.WINDY_TOOLS_PATH;
+    }
+
+    const installInfo = readInstallRegistry();
+    if (installInfo && installInfo.toolsPath && fs.existsSync(installInfo.toolsPath)) {
+        return installInfo.toolsPath;
+    }
+
+    return path.join(baseDir, 'tools');
+};
+
+/**
  * Why: packaged exe crashes are often caused by missing external tool folders.
  * @param {string} toolsPath tools root directory.
  * @returns {{ok: boolean, arduinoCliPath: string, missing: string[]}}
@@ -90,6 +140,8 @@ const validateToolsLayout = toolsPath => {
 module.exports = {
     resolveRuntimeBaseDir,
     resolveUserDataPath,
+    resolveToolsPath,
+    readInstallRegistry,
     resolveToolBinary,
     validateToolsLayout
 };

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const path = require('path');
 const clc = require('cli-color');
 const OpenBlockLink = require('../src/index');
 const {
     resolveRuntimeBaseDir,
     resolveUserDataPath,
+    resolveToolsPath,
     validateToolsLayout
 } = require('../src/lib/runtime-paths');
 const {
@@ -16,8 +16,7 @@ const {
 
 const baseDir = resolveRuntimeBaseDir();
 const userDataPath = resolveUserDataPath(baseDir);
-const toolsPath = process.env.WINDY_TOOLS_PATH ||
-    path.join(baseDir, 'tools');
+const toolsPath = resolveToolsPath(baseDir);
 
 process.on('uncaughtException', err => {
     console.error(clc.red(`[link] uncaught exception: ${err.stack || err}`));
@@ -37,7 +36,7 @@ if (!toolsCheck.ok) {
         console.error(clc.red(`  - ${item}`));
     });
     console.error(clc.yellow(
-        '[link] place tools/ and firmwares/ beside the exe, then restart.'
+        '[link] reinstall Future Academy or place tools/ beside the exe, then restart.'
     ));
 }
 
