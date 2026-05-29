@@ -145,40 +145,6 @@ const createToolsArchive = archivePath => {
     }
 };
 
-/**
- * Extract tools.7z at build time so the GUI installer does not run 7za on the user's PC.
- * @param {string} archivePath path to tools.7z.
- * @param {string} outputRoot payload root (creates outputRoot/tools/).
- */
-const extractToolsPayload = (archivePath, outputRoot) => {
-    const toolsDir = path.join(outputRoot, 'tools');
-    if (fs.existsSync(toolsDir)) {
-        fs.rmSync(toolsDir, {recursive: true, force: true});
-    }
-
-    console.log(`Extracting ${archivePath} for installer…`);
-    const result = spawnSync(path7za, [
-        'x',
-        archivePath,
-        `-o${outputRoot}`,
-        '-y'
-    ], {
-        cwd: repoRoot,
-        stdio: 'inherit',
-        windowsHide: true
-    });
-
-    if (result.error) {
-        throw result.error;
-    }
-    if (result.status !== 0) {
-        throw new Error(`Tool extraction failed with exit code ${result.status}`);
-    }
-    if (!fs.existsSync(path.join(toolsDir, 'Arduino', 'arduino-cli.exe'))) {
-        throw new Error(`Extracted tools missing arduino-cli in ${toolsDir}`);
-    }
-};
-
 const main = async () => {
     if (os.platform() !== 'win32') {
         console.error('Installer payload can only be prepared on Windows.');
@@ -216,10 +182,7 @@ const main = async () => {
 
     const toolsArchivePath = path.join(payloadRoot, 'tools.7z');
     createToolsArchive(toolsArchivePath);
-
-    if (useGui) {
-        extractToolsPayload(toolsArchivePath, payloadRoot);
-    }
+    fs.copyFileSync(path7za, path.join(payloadRoot, '7za.exe'));
 
     const appDir = path.join(payloadRoot, 'app');
 
@@ -251,7 +214,6 @@ const main = async () => {
         fs.copyFileSync(cachedNodeMsi, payloadNodeMsi);
 
         fs.copyFileSync(exePath, path.join(payloadRoot, 'WindyLink.exe'));
-        fs.copyFileSync(path7za, path.join(payloadRoot, '7za.exe'));
         copyDir(firmwaresRoot, path.join(payloadRoot, 'firmwares'));
         fs.writeFileSync(
             path.join(payloadRoot, 'build-type.txt'),

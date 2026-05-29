@@ -85,18 +85,29 @@ Note: do not run `script/apply-exe-icon.js` on pkg-built `WindyLink.exe` — it 
 Output:
 
 ```
-dist/FutureAcademy-0.2.0-x64-setup.exe
+dist/FutureAcademy-<version>-x64-setup.exe
 ```
+
+(`<version>` matches `package.json`, e.g. `2.0.1`.)
 
 Install flow:
 
 1. Double-click the setup EXE
 2. App files install to `C:\Program Files\Future Academy\`
-3. Build tools are extracted to `C:\ProgramData\Windify\Future Academy\tools\`
+3. Setup extracts build tools from `tools.7z` to `C:\ProgramData\Windify\Future Academy\tools\` (wait for the progress step; may take a few minutes)
 4. (CLI installer only) Node.js LTS is installed silently if it is missing or older than v18
-5. Start **Future Academy** from the Start Menu — opens the GUI (device list, tray)
+5. Start **Future Academy** from the Start Menu — GUI window + system tray
 6. Browser opens https://stem.windify.edu.vn/
 7. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
+
+Release notes: [release.md](release.md)
+
+If `release:setup` fails because `dist\` is locked:
+
+```powershell
+npm run clean:dist
+npm run release:setup
+```
 
 ### ESP32 binary flashing & device scan
 

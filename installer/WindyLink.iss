@@ -49,11 +49,10 @@ Source: "..\dist\installer-payload\WindyLink.exe"; DestDir: "{app}"; Flags: igno
 Source: "..\dist\installer-payload\7za.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\installer-payload\firmwares\*"; DestDir: "{app}\firmwares"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
-#ifndef GuiBuild
+Source: "..\dist\installer-payload\7za.exe"; DestDir: "{tmp}"; DestName: "7za.exe"; Flags: deleteafterinstall
 Source: "..\dist\installer-payload\tools.7z"; DestDir: "{tmp}"; Flags: deleteafterinstall
+#ifndef GuiBuild
 Source: "..\dist\installer-payload\node-v18.20.8-x64.msi"; DestDir: "{tmp}"; DestName: "node.msi"; Flags: deleteafterinstall
-#else
-Source: "..\dist\installer-payload\tools\*"; DestDir: "{commonappdata}\Windify\Future Academy\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 [Icons]
@@ -71,6 +70,9 @@ Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueN
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonappdata}\Windify\Future Academy"
+
+[Run]
+Filename: "{tmp}\7za.exe"; Parameters: "x ""{tmp}\tools.7z"" -o""{commonappdata}\Windify\Future Academy"" -y"; WorkingDir: "{tmp}"; StatusMsg: "Extracting build tools (this may take a few minutes)..."; Flags: runhidden waituntilterminated; Check: ShouldExtractTools
 
 [Code]
 function GetNodeVersion: String;
@@ -109,15 +111,18 @@ begin
   Result := Major >= MinMajor;
 end;
 
+#ifdef GuiBuild
+function EnsureNodeJs: Boolean;
+begin
+  { Electron GUI bundles its own Node runtime; no system Node.js MSI. }
+  Result := True;
+end;
+#else
 function EnsureNodeJs: Boolean;
 var
   ResultCode: Integer;
   NodeMsi: String;
 begin
-#ifdef GuiBuild
-  { Electron GUI bundles its own Node runtime; no system Node.js MSI. }
-  Result := True;
-#else
   if NodeVersionAtLeast(18) then
   begin
     Result := True;
@@ -142,65 +147,13 @@ begin
   Result := (ResultCode = 0) or (ResultCode = 3010);
   if not Result then
     MsgBox(ExpandConstant('Node.js installer failed with exit code ' + IntToStr(ResultCode) + '.'), mbError, MB_OK);
-#endif
 end;
-
-function QuotePath(const Value: string): string;
-begin
-  Result := '"' + Value + '"';
-end;
-
-function ExtractTools: Boolean;
-var
-  ResultCode: Integer;
-  ArchivePath: String;
-  OutputDir: String;
-  SevenZip: String;
-  AppDir: String;
-begin
-#ifdef GuiBuild
-  { Build tools are installed via [Files] (pre-extracted at build time). }
-  OutputDir := ExpandConstant('{commonappdata}\Windify\Future Academy\tools');
-  if not DirExists(OutputDir) then
-  begin
-    MsgBox('Build tools were not installed. Rebuild the setup with npm run release:setup.', mbError, MB_OK);
-    Result := False;
-    Exit;
-  end;
-  Result := True;
-#else
-  ArchivePath := ExpandConstant('{tmp}\tools.7z');
-  OutputDir := ExpandConstant('{commonappdata}\Windify\Future Academy');
-  AppDir := ExpandConstant('{app}');
-  SevenZip := AppDir + '\7za.exe';
-
-  if not FileExists(ArchivePath) then
-  begin
-    MsgBox('Missing tools archive in installer payload.', mbError, MB_OK);
-    Result := False;
-    Exit;
-  end;
-
-  if not FileExists(SevenZip) then
-  begin
-    MsgBox('Missing 7-Zip in the install folder: ' + SevenZip, mbError, MB_OK);
-    Result := False;
-    Exit;
-  end;
-
-  ForceDirectories(OutputDir);
-
-  if not Exec(QuotePath(SevenZip), ExpandConstant('x "' + ArchivePath + '" -o"' + OutputDir + '" -y'), QuotePath(AppDir), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    MsgBox('Failed to run 7-Zip to extract build tools.', mbError, MB_OK);
-    Result := False;
-    Exit;
-  end;
-
-  Result := (ResultCode = 0);
-  if not Result then
-    MsgBox(ExpandConstant('Tool extraction failed with exit code ' + IntToStr(ResultCode) + '.'), mbError, MB_OK);
 #endif
+
+function ShouldExtractTools: Boolean;
+begin
+  ForceDirectories(ExpandConstant('{commonappdata}\Windify\Future Academy'));
+  Result := not FileExists(ExpandConstant('{commonappdata}\Windify\Future Academy\tools\Arduino\arduino-cli.exe'));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -208,9 +161,6 @@ begin
   if CurStep = ssPostInstall then
   begin
     if not EnsureNodeJs then
-      Abort;
-
-    if not ExtractTools then
       Abort;
   end;
 end;
