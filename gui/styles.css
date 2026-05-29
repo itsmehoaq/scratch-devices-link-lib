@@ -1,0 +1,360 @@
+:root {
+    --color-primary: #0e69b3;
+    --color-mobifone: #0061af;
+    --color-white: #ffffff;
+    --color-neutral-200: #e5e5e5;
+    --color-neutral-700: #404040;
+    --color-muted: #525252;
+    --gradient-section: linear-gradient(
+        176deg,
+        #f6c149 0%,
+        #eb5779 100%
+    );
+    --color-device-scroll: #f3f3f3;
+    --shadow-panel: 0 -1px 30px rgba(5, 51, 69, 0.2);
+    --shadow-card: 0 -1px 2px rgba(0, 0, 0, 0.12);
+    --shadow-device-scroll: 0 -1px 4px rgba(0, 0, 0, 0.25);
+    --shadow-float: 0 3px 15px rgba(0, 0, 0, 0.1);
+    --float-container-bg: rgba(255, 255, 255, 0.9);
+    /* Figma 7:325 — default (no hover), ~6% gradient opacity */
+    --gradient-float-btn-idle: radial-gradient(
+        ellipse 80% 120% at 50% 50%,
+        rgba(14, 105, 179, 0.06) 0%,
+        rgba(44, 124, 189, 0.054) 12.5%,
+        rgba(74, 143, 198, 0.048) 25%,
+        rgba(135, 180, 217, 0.036) 50%,
+        rgba(195, 218, 236, 0.024) 75%,
+        rgba(255, 255, 255, 0.012) 100%
+    );
+    /* Figma 7:291 — hover, 40% gradient + blur */
+    --gradient-float-btn-hover: radial-gradient(
+        ellipse 80% 120% at 50% 50%,
+        rgba(14, 105, 179, 0.4) 0%,
+        rgba(44, 124, 189, 0.36) 12.5%,
+        rgba(74, 143, 198, 0.32) 25%,
+        rgba(135, 180, 217, 0.24) 50%,
+        rgba(195, 218, 236, 0.16) 75%,
+        rgba(255, 255, 255, 0.08) 100%
+    );
+    --radius-shell: 8px;
+    --radius-panel: 36px;
+    --radius-card: 24px;
+    --font-display: 'Quicksand', system-ui, sans-serif;
+    --font-body: 'DM Sans', system-ui, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+}
+
+body {
+    background: var(--color-primary);
+}
+
+.app {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+    padding: 12px;
+    border-radius: var(--radius-shell);
+}
+
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    flex-shrink: 0;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+}
+
+.brand__logo {
+    display: block;
+    width: 84px;
+    height: 66px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.brand__title {
+    margin: 0;
+    color: var(--color-white);
+    font-family: var(--font-display);
+    font-weight: 700;
+    line-height: 1;
+}
+
+.brand__future {
+    font-size: 32px;
+}
+
+.brand__academy {
+    font-size: 20px;
+}
+
+.app-header__actions {
+    display: flex;
+    gap: 12px;
+}
+
+.icon-btn {
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    line-height: 0;
+    opacity: 0.95;
+}
+
+.icon-btn img {
+    display: block;
+    width: 32px;
+    height: 32px;
+}
+
+.icon-btn:hover {
+    opacity: 1;
+}
+
+/* Figma 4:714 — Content */
+.content {
+    position: relative;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+    min-height: 0;
+    padding: 24px;
+    border-radius: var(--radius-panel);
+    background: var(--color-white);
+    isolation: isolate;
+    overflow: hidden;
+}
+
+.content__header {
+    position: relative;
+    z-index: 3;
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 8px 20px;
+    border-radius: 20px;
+    background: var(--gradient-section);
+    box-shadow: var(--shadow-panel);
+    color: var(--color-white);
+}
+
+.content__header-title {
+    font-family: var(--font-display);
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1;
+}
+
+.content__status {
+    position: relative;
+    z-index: 3;
+    flex-shrink: 0;
+    margin: -4px 0 0;
+    padding: 0 4px;
+    font-size: 12px;
+    color: var(--color-muted);
+}
+
+.content__status[data-state='ready'] {
+    color: var(--color-primary);
+}
+
+.content__status[data-state='error'] {
+    color: #c62828;
+}
+
+.content__devices {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    padding: 8px;
+    border-radius: 8px;
+    background: var(--color-device-scroll);
+    box-shadow: var(--shadow-device-scroll);
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.device-empty {
+    margin: 24px 8px;
+    text-align: center;
+    color: var(--color-muted);
+    font-size: 14px;
+}
+
+.device-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.device-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+    padding-bottom: 12px;
+    border: 1px solid var(--color-neutral-200);
+    border-radius: var(--radius-card);
+    background: var(--color-white);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+}
+
+.device-card__header {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px;
+    border-radius: var(--radius-card);
+    background-color: var(--color-primary);
+    background-image: url('assets/cardHeaderBg.png');
+    background-size: cover;
+    background-position: center;
+    box-shadow: 0 6px 0 var(--color-mobifone);
+    overflow: hidden;
+}
+
+.device-card__header > * {
+    position: relative;
+    z-index: 1;
+}
+
+.device-card__icon {
+    flex-shrink: 0;
+}
+
+.device-card__title {
+    flex: 1;
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--color-white);
+    text-transform: uppercase;
+    word-break: break-word;
+}
+
+.device-card__chevron {
+    flex-shrink: 0;
+    transform: rotate(90deg);
+}
+
+.device-card__meta {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    height: 16px;
+    margin: 0;
+    padding: 0 24px;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--color-neutral-700);
+}
+
+.device-card__meta > div {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    gap: 4px;
+}
+
+.device-card__meta dt {
+    margin: 0;
+    color: var(--color-muted);
+    font-weight: 400;
+}
+
+.device-card__meta dd {
+    margin: 0;
+    font-weight: 500;
+    word-break: break-all;
+}
+
+/* Figma 7:289 — float bar inside Content */
+.content__float {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-shrink: 0;
+    gap: 4px;
+    align-items: center;
+    align-self: center;
+    width: 100%;
+    max-width: 457px;
+    height: 57px;
+    padding: 8px;
+    border: 1px solid var(--color-neutral-200);
+    border-radius: var(--radius-panel);
+    background: var(--float-container-bg);
+    box-shadow: var(--shadow-float);
+}
+
+.content__float-btn {
+    display: flex;
+    flex: 1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 0;
+    height: 100%;
+    padding: 10px 8px;
+    border: 1px solid var(--color-primary);
+    border-radius: var(--radius-card);
+    background-color: var(--color-white);
+    background-image: var(--gradient-float-btn-idle);
+    color: var(--color-primary);
+    font-family: var(--font-display);
+    font-size: 8px;
+    font-weight: 600;
+    line-height: 20px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-image 0.15s ease, backdrop-filter 0.15s ease;
+}
+
+.content__float-btn:hover,
+.content__float-btn:focus-visible {
+    background-color: transparent;
+    background-image: var(--gradient-float-btn-hover);
+    backdrop-filter: blur(15px);
+}
+
+.content__float-btn img {
+    display: block;
+    flex-shrink: 0;
+}

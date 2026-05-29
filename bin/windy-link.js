@@ -1,22 +1,38 @@
 #!/usr/bin/env node
 
+const path = require('path');
+const {spawn} = require('child_process');
 const clc = require('cli-color');
-const OpenBlockLink = require('../src/index');
+const startLinkServer = require('../src/start-link-server');
 const {
-    resolveRuntimeBaseDir,
-    resolveUserDataPath,
-    resolveToolsPath,
-    validateToolsLayout
-} = require('../src/lib/runtime-paths');
-const {
-    resolveStartupUrl,
     shouldOpenStartupUrl,
+    resolveStartupUrl,
     openUrl
 } = require('../src/lib/open-url');
 
-const baseDir = resolveRuntimeBaseDir();
-const userDataPath = resolveUserDataPath(baseDir);
-const toolsPath = resolveToolsPath(baseDir);
+const launchGui = () => {
+    let electronPath;
+    try {
+        electronPath = require('electron');
+    } catch (err) {
+        console.error(clc.red(
+            '[link] GUI requires electron. Run: npm install && npm run start:gui'
+        ));
+        process.exit(1);
+    }
+    const mainScript = path.join(__dirname, '..', 'gui', 'main.js');
+    const child = spawn(electronPath, [mainScript], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+    });
+    child.unref();
+};
+
+if (process.argv.includes('--gui')) {
+    launchGui();
+    process.exit(0);
+}
 
 process.on('uncaughtException', err => {
     console.error(clc.red(`[link] uncaught exception: ${err.stack || err}`));
@@ -26,38 +42,16 @@ process.on('unhandledRejection', err => {
     console.error(clc.red(`[link] unhandled rejection: ${err && err.stack ? err.stack : err}`));
 });
 
-const toolsCheck = validateToolsLayout(toolsPath);
-console.info(`[link] runtime base: ${baseDir}`);
-console.info(`[link] tools path: ${toolsPath}`);
-console.info(`[link] user data: ${userDataPath}`);
-if (!toolsCheck.ok) {
-    console.error(clc.red('[link] build/upload tools are missing:'));
-    toolsCheck.missing.forEach(item => {
-        console.error(clc.red(`  - ${item}`));
-    });
-    console.error(clc.yellow(
-        '[link] reinstall Future Academy or place tools/ beside the exe, then restart.'
-    ));
-}
-
-const link = new OpenBlockLink(userDataPath, toolsPath);
-
-link.listen();
-
-link.on('ready', () => {
-    console.info('Future Academy link server is ready.');
-    if (shouldOpenStartupUrl()) {
-        const startupUrl = resolveStartupUrl();
-        console.info(`[link] opening ${startupUrl}`);
-        openUrl(startupUrl);
+startLinkServer({
+    onReady: () => {
+        if (shouldOpenStartupUrl()) {
+            const startupUrl = resolveStartupUrl();
+            console.info(`[link] opening ${startupUrl}`);
+            openUrl(startupUrl);
+        }
+    },
+    onError: err => {
+        console.error(err);
+        process.exit(1);
     }
-});
-
-link.on('port-in-use', () => {
-    console.info('Port is already in use by another Windy Link server.');
-});
-
-link.on('error', err => {
-    console.error(err);
-    process.exit(1);
 });

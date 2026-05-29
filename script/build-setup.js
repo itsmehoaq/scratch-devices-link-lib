@@ -62,11 +62,21 @@ if (!iscc) {
     process.exit(1);
 }
 
-const result = spawnSync(iscc, [
+const buildTypePath = path.join(payloadRoot, 'build-type.txt');
+const isGuiInstaller = fs.existsSync(buildTypePath) &&
+    fs.readFileSync(buildTypePath, 'utf8').trim() === 'gui';
+
+const isccArgs = [
     issPath,
     `/DAppVersion=${pkg.version}`,
     `/DOutputBaseFilename=FutureAcademy-${pkg.version}-x64-setup`
-], {
+];
+if (isGuiInstaller) {
+    isccArgs.push('/DGuiBuild=1');
+    console.info('Building GUI installer (Electron, bundled Node runtime).');
+}
+
+const result = spawnSync(iscc, isccArgs, {
     cwd: repoRoot,
     stdio: 'inherit',
     shell: false

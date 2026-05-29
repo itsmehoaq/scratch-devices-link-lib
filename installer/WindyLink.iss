@@ -22,7 +22,11 @@ DisableProgramGroupPage=yes
 OutputDir=..\dist
 OutputBaseFilename={#OutputBaseFilename}
 SetupIconFile=..\assets\FutureAcademy.ico
+#ifdef GuiBuild
+UninstallDisplayIcon={app}\FutureAcademy.ico
+#else
 UninstallDisplayIcon={app}\WindyLink.exe
+#endif
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -38,15 +42,28 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
+#ifdef GuiBuild
+Source: "..\dist\installer-payload\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#else
 Source: "..\dist\installer-payload\WindyLink.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\installer-payload\7za.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\installer-payload\firmwares\*"; DestDir: "{app}\firmwares"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
+#ifndef GuiBuild
 Source: "..\dist\installer-payload\tools.7z"; DestDir: "{tmp}"; Flags: deleteafterinstall
 Source: "..\dist\installer-payload\node-v18.20.8-x64.msi"; DestDir: "{tmp}"; DestName: "node.msi"; Flags: deleteafterinstall
+#else
+Source: "..\dist\installer-payload\tools\*"; DestDir: "{commonappdata}\Windify\Future Academy\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Icons]
+#ifdef GuiBuild
+Name: "{group}\{#AppName}"; Filename: "{app}\WindyLink.exe"; IconFilename: "{app}\FutureAcademy.ico"; Comment: "Start Future Academy local hardware server"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\WindyLink.exe"; IconFilename: "{app}\FutureAcademy.ico"; Tasks: desktopicon
+#else
 Name: "{group}\{#AppName}"; Filename: "{app}\WindyLink.exe"; Comment: "Start Future Academy local hardware server"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\WindyLink.exe"; Tasks: desktopicon
+#endif
 
 [Registry]
 Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
@@ -97,6 +114,10 @@ var
   ResultCode: Integer;
   NodeMsi: String;
 begin
+#ifdef GuiBuild
+  { Electron GUI bundles its own Node runtime; no system Node.js MSI. }
+  Result := True;
+#else
   if NodeVersionAtLeast(18) then
   begin
     Result := True;
@@ -121,6 +142,12 @@ begin
   Result := (ResultCode = 0) or (ResultCode = 3010);
   if not Result then
     MsgBox(ExpandConstant('Node.js installer failed with exit code ' + IntToStr(ResultCode) + '.'), mbError, MB_OK);
+#endif
+end;
+
+function QuotePath(const Value: string): string;
+begin
+  Result := '"' + Value + '"';
 end;
 
 function ExtractTools: Boolean;
@@ -128,9 +155,24 @@ var
   ResultCode: Integer;
   ArchivePath: String;
   OutputDir: String;
+  SevenZip: String;
+  AppDir: String;
 begin
+#ifdef GuiBuild
+  { Build tools are installed via [Files] (pre-extracted at build time). }
+  OutputDir := ExpandConstant('{commonappdata}\Windify\Future Academy\tools');
+  if not DirExists(OutputDir) then
+  begin
+    MsgBox('Build tools were not installed. Rebuild the setup with npm run release:setup.', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+  Result := True;
+#else
   ArchivePath := ExpandConstant('{tmp}\tools.7z');
   OutputDir := ExpandConstant('{commonappdata}\Windify\Future Academy');
+  AppDir := ExpandConstant('{app}');
+  SevenZip := AppDir + '\7za.exe';
 
   if not FileExists(ArchivePath) then
   begin
@@ -139,9 +181,16 @@ begin
     Exit;
   end;
 
+  if not FileExists(SevenZip) then
+  begin
+    MsgBox('Missing 7-Zip in the install folder: ' + SevenZip, mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
   ForceDirectories(OutputDir);
 
-  if not Exec(ExpandConstant('{app}\7za.exe'), ExpandConstant('x "' + ArchivePath + '" -o"' + OutputDir + '" -y'), '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  if not Exec(QuotePath(SevenZip), ExpandConstant('x "' + ArchivePath + '" -o"' + OutputDir + '" -y'), QuotePath(AppDir), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     MsgBox('Failed to run 7-Zip to extract build tools.', mbError, MB_OK);
     Result := False;
@@ -151,6 +200,7 @@ begin
   Result := (ResultCode = 0);
   if not Result then
     MsgBox(ExpandConstant('Tool extraction failed with exit code ' + IntToStr(ResultCode) + '.'), mbError, MB_OK);
+#endif
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

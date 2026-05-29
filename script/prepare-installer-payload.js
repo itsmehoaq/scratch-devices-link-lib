@@ -4,14 +4,28 @@ const https = require('https');
 const os = require('os');
 const path = require('path');
 const {path7za} = require('7zip-bin');
+const {
+    stopRunningWindyLink,
+    cleanLockedDir
+} = require('./lib/clean-locked-dir');
+const {getGuiUnpackedDir, GUI_EXE} = require('./lib/electron-output');
 
 const repoRoot = path.resolve(__dirname, '..');
 const pkg = require('../package.json');
+const useGui = process.argv.includes('--gui');
 const payloadRoot = path.join(repoRoot, 'dist', 'installer-payload');
-const exePath = path.join(repoRoot, 'dist', 'WindyLink.exe');
+const cliExePath = path.join(repoRoot, 'dist', 'WindyLink.exe');
+
+/** Resolve GUI paths at runtime (pointer may be stale between steps). */
+const resolveGuiPaths = () => {
+    const guiUnpackedDir = getGuiUnpackedDir(repoRoot);
+    const guiExePath = path.join(guiUnpackedDir, GUI_EXE);
+    return {guiUnpackedDir, guiExePath};
+};
 const toolsRoot = path.join(repoRoot, 'tools');
 const firmwaresRoot = path.join(repoRoot, 'firmwares');
 const assetsRoot = path.join(repoRoot, 'installer', 'assets');
+const appIconPath = path.join(repoRoot, 'assets', 'FutureAcademy.ico');
 const nodeVersion = '18.20.8';
 const nodeMsiName = `node-v${nodeVersion}-x64.msi`;
 const nodeMsiUrl = `https://nodejs.org/dist/v${nodeVersion}/${nodeMsiName}`;
@@ -31,6 +45,37 @@ const formatBytes = bytes => {
 
 const copyDir = (source, target) => {
     fs.cpSync(source, target, {recursive: true, force: true});
+};
+
+/** Remove known payload children when the root folder cannot be deleted. */
+const partialPayloadClean = () => {
+    if (!fs.existsSync(payloadRoot)) {
+        return;
+    }
+    for (const name of fs.readdirSync(payloadRoot)) {
+        cleanLockedDir(path.join(payloadRoot, name), 'prepare-installer-payload');
+    }
+};
+
+/**
+ * Clear prior installer payload; rename aside when Windows locks files (EPERM/EBUSY).
+ */
+const preparePayloadRoot = () => {
+    stopRunningWindyLink();
+
+    if (!fs.existsSync(payloadRoot)) {
+        fs.mkdirSync(payloadRoot, {recursive: true});
+        return;
+    }
+
+    if (cleanLockedDir(payloadRoot, 'prepare-installer-payload')) {
+        fs.mkdirSync(payloadRoot, {recursive: true});
+        return;
+    }
+
+    console.warn('[prepare-installer-payload] clearing payload contents only…');
+    partialPayloadClean();
+    fs.mkdirSync(payloadRoot, {recursive: true});
 };
 
 /**
@@ -100,15 +145,57 @@ const createToolsArchive = archivePath => {
     }
 };
 
+/**
+ * Extract tools.7z at build time so the GUI installer does not run 7za on the user's PC.
+ * @param {string} archivePath path to tools.7z.
+ * @param {string} outputRoot payload root (creates outputRoot/tools/).
+ */
+const extractToolsPayload = (archivePath, outputRoot) => {
+    const toolsDir = path.join(outputRoot, 'tools');
+    if (fs.existsSync(toolsDir)) {
+        fs.rmSync(toolsDir, {recursive: true, force: true});
+    }
+
+    console.log(`Extracting ${archivePath} for installer…`);
+    const result = spawnSync(path7za, [
+        'x',
+        archivePath,
+        `-o${outputRoot}`,
+        '-y'
+    ], {
+        cwd: repoRoot,
+        stdio: 'inherit',
+        windowsHide: true
+    });
+
+    if (result.error) {
+        throw result.error;
+    }
+    if (result.status !== 0) {
+        throw new Error(`Tool extraction failed with exit code ${result.status}`);
+    }
+    if (!fs.existsSync(path.join(toolsDir, 'Arduino', 'arduino-cli.exe'))) {
+        throw new Error(`Extracted tools missing arduino-cli in ${toolsDir}`);
+    }
+};
+
 const main = async () => {
     if (os.platform() !== 'win32') {
         console.error('Installer payload can only be prepared on Windows.');
         process.exit(1);
     }
 
+    const exePath = useGui
+        ? resolveGuiPaths().guiExePath
+        : cliExePath;
+
     if (!fs.existsSync(exePath)) {
         console.error(`Missing exe: ${exePath}`);
-        console.error('Run npm run build:exe:win first.');
+        if (useGui) {
+            console.error('Run npm run build:gui:win first.');
+        } else {
+            console.error('Run npm run build:exe:win first.');
+        }
         process.exit(1);
     }
 
@@ -125,23 +212,53 @@ const main = async () => {
         process.exit(1);
     }
 
-    if (fs.existsSync(payloadRoot)) {
-        fs.rmSync(payloadRoot, {recursive: true, force: true});
-    }
-    fs.mkdirSync(payloadRoot, {recursive: true});
+    preparePayloadRoot();
 
     const toolsArchivePath = path.join(payloadRoot, 'tools.7z');
     createToolsArchive(toolsArchivePath);
 
-    const cachedNodeMsi = path.join(assetsRoot, nodeMsiName);
-    const payloadNodeMsi = path.join(payloadRoot, nodeMsiName);
-    console.log(`Ensuring Node.js MSI (${nodeVersion})...`);
-    await downloadNodeMsi(cachedNodeMsi);
-    fs.copyFileSync(cachedNodeMsi, payloadNodeMsi);
+    if (useGui) {
+        extractToolsPayload(toolsArchivePath, payloadRoot);
+    }
 
-    fs.copyFileSync(exePath, path.join(payloadRoot, 'WindyLink.exe'));
-    fs.copyFileSync(path7za, path.join(payloadRoot, '7za.exe'));
-    copyDir(firmwaresRoot, path.join(payloadRoot, 'firmwares'));
+    const appDir = path.join(payloadRoot, 'app');
+
+    if (useGui) {
+        const {guiUnpackedDir} = resolveGuiPaths();
+        if (!fs.existsSync(guiUnpackedDir)) {
+            console.error(`Missing GUI folder: ${guiUnpackedDir}`);
+            console.error('Run npm run build:gui:win first.');
+            process.exit(1);
+        }
+        console.log(`Copying Electron GUI from ${guiUnpackedDir}…`);
+        copyDir(guiUnpackedDir, appDir);
+        fs.copyFileSync(path7za, path.join(appDir, '7za.exe'));
+        copyDir(firmwaresRoot, path.join(appDir, 'firmwares'));
+        if (!fs.existsSync(appIconPath)) {
+            throw new Error(`Missing app icon: ${appIconPath}`);
+        }
+        fs.copyFileSync(appIconPath, path.join(appDir, 'FutureAcademy.ico'));
+        fs.writeFileSync(
+            path.join(payloadRoot, 'build-type.txt'),
+            'gui\n',
+            'utf8'
+        );
+    } else {
+        const cachedNodeMsi = path.join(assetsRoot, nodeMsiName);
+        const payloadNodeMsi = path.join(payloadRoot, nodeMsiName);
+        console.log(`Ensuring Node.js MSI (${nodeVersion})...`);
+        await downloadNodeMsi(cachedNodeMsi);
+        fs.copyFileSync(cachedNodeMsi, payloadNodeMsi);
+
+        fs.copyFileSync(exePath, path.join(payloadRoot, 'WindyLink.exe'));
+        fs.copyFileSync(path7za, path.join(payloadRoot, '7za.exe'));
+        copyDir(firmwaresRoot, path.join(payloadRoot, 'firmwares'));
+        fs.writeFileSync(
+            path.join(payloadRoot, 'build-type.txt'),
+            'cli\n',
+            'utf8'
+        );
+    }
 
     const versionFile = path.join(payloadRoot, 'version.txt');
     fs.writeFileSync(versionFile, `${pkg.version}\n`, 'utf8');

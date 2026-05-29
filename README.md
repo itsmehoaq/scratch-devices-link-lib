@@ -10,6 +10,15 @@ npm run fetch
 npm start
 ```
 
+### Desktop GUI (Figma device panel)
+
+```bash
+npm install
+npm run start:gui
+```
+
+Shows a Future Academy tray window with USB serial device list, **Website**, **Console**, and **Refresh**. See [docs/gui.md](docs/gui.md).
+
 Listen host: default `0.0.0.0` (all interfaces). Loopback-only: `set WINDY_LINK_LISTEN_HOST=127.0.0.1` then `npm start`. The address `0.0.0.1` is not valid for TCP bind.
 
 When launched as `WindyLink.exe`, the app opens **https://stem.windify.edu.vn/** in the default browser after the link server is ready.
@@ -55,7 +64,7 @@ Prerequisite on the build machine:
 winget install JRSoftware.InnoSetup
 ```
 
-Build the setup installer (icon appears on Start Menu shortcut and Add/Remove Programs):
+Build the **desktop GUI** setup installer (Electron tray app + device panel):
 
 ```powershell
 npm install
@@ -63,7 +72,15 @@ npm run fetch
 npm run release:setup
 ```
 
-Note: do not run `script/apply-exe-icon.js` on pkg-built `WindyLink.exe` — it corrupts the binary. The Future Academy icon is applied via the Inno Setup installer.
+This runs `build:gui:win` (Electron), then Inno Setup. The installed app is `WindyLink.exe` with the Future Academy window and system tray — no separate Node.js install required.
+
+Headless CLI installer (single `pkg` exe + optional Node.js MSI):
+
+```powershell
+npm run release:setup:cli
+```
+
+Note: do not run `script/apply-exe-icon.js` on pkg-built `WindyLink.exe` — it corrupts the binary. Icons come from `assets/FutureAcademy.ico` via `npm run gui:logo` and Inno Setup.
 
 Output:
 
@@ -76,8 +93,8 @@ Install flow:
 1. Double-click the setup EXE
 2. App files install to `C:\Program Files\Future Academy\`
 3. Build tools are extracted to `C:\ProgramData\Windify\Future Academy\tools\`
-4. Node.js LTS is installed silently if it is missing or older than v18
-5. Start **Future Academy** from the Start Menu (Future Academy logo icon)
+4. (CLI installer only) Node.js LTS is installed silently if it is missing or older than v18
+5. Start **Future Academy** from the Start Menu — opens the GUI (device list, tray)
 6. Browser opens https://stem.windify.edu.vn/
 7. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
 

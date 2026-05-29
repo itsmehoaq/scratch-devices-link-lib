@@ -1,17 +1,22 @@
 {
-  "name": "Windify Block",
-  "version": "0.2.0",
+  "name": "windify-block",
+  "version": "2.0.1",
   "description": "Future Academy local hardware link server for https://stem.windify.edu.vn/",
   "main": "src/index.js",
   "bin": {
     "windy-link": "./bin/windy-link.js"
   },
   "scripts": {
+    "start:gui": "electron gui/main.js",
+    "gui:assets": "node script/convert-gui-assets.js",
+    "gui:logo": "node script/sync-logo-assets.js && node script/generate-icon.js",
+    "apply:gui-exe-icon": "node script/apply-gui-exe-icon.js",
     "fetch": "rimraf tools firmwares && node script/download-tools.js && node script/download-firmwares.js",
     "fetch:small": "npm run fetch && npm run tools:prune && npm run tools:archive",
     "start": "rimraf ../.winblockData/link && node test/start-server.js --log-level=info",
     "start:debug": "rimraf ../.winblockData/link && node test/start-server.js --log-level=debug",
     "clean": "rimraf ../.winblockData/link tools firmwares",
+    "clean:dist": "node script/clean-dist.js",
     "docs": "jsdoc -c .jsdoc.json",
     "lint": "eslint ./src",
     "test": "",
@@ -23,11 +28,52 @@
     "generate:icon": "node script/generate-icon.js",
     "build:exe": "pkg . --out-path dist",
     "build:exe:win": "npm run generate:icon && pkg . --targets node18-win-x64 --output dist/WindyLink.exe",
+    "build:gui:win": "node script/build-gui-win.js",
     "package:dist": "node script/package-dist.js",
     "prepare:installer-payload": "node script/prepare-installer-payload.js",
+    "prepare:installer-payload:gui": "node script/prepare-installer-payload.js --gui",
     "build:setup": "node script/build-setup.js",
     "release:win": "npm run build:exe:win && npm run package:dist",
-    "release:setup": "npm run build:exe:win && npm run prepare:installer-payload && npm run build:setup"
+    "release:setup": "npm run build:gui:win && npm run prepare:installer-payload:gui && npm run build:setup",
+    "release:setup:cli": "npm run build:exe:win && npm run prepare:installer-payload && npm run build:setup"
+  },
+  "build": {
+    "appId": "edu.windify.future-academy.link",
+    "productName": "Future Academy",
+    "forceCodeSigning": false,
+    "directories": {
+      "output": "dist/electron",
+      "buildResources": "assets"
+    },
+    "files": [
+      "gui/**/*",
+      "src/**/*",
+      "assets/FutureAcademy.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/serialport/**",
+      "**/node_modules/@serialport/**",
+      "**/node_modules/7zip-bin/**"
+    ],
+    "extraMetadata": {
+      "main": "gui/main.js"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/FutureAcademy.ico",
+      "executableName": "WindyLink",
+      "sign": false,
+      "signAndEditExecutable": false
+    }
   },
   "pkg": {
     "scripts": [
@@ -78,6 +124,8 @@
     "@commitlint/config-conventional": "^19.8.1",
     "@yao-pkg/pkg": "^6.19.0",
     "babel-eslint": "^10.0.1",
+    "electron": "^35.1.5",
+    "electron-builder": "^25.1.8",
     "eslint": "^5.3.0",
     "eslint-config-scratch": "^5.0.0",
     "jsdoc": "^3.6.6",
