@@ -65,9 +65,22 @@ class SerialportSession extends Session {
         return String(raw || '').replace(/^0x/i, '').toUpperCase();
     }
 
+    /**
+     * Extract a comparable numeric identifier from a serial port path.
+     * Windows: COM3 → 3, COM12 → 12
+     * macOS/Linux: /dev/ttyUSB0 → 0, /dev/tty.usbmodem14101 → 14101
+     * @param {string} serialPath serial port path.
+     * @returns {number} numeric port identifier, or -1 if not parseable.
+     */
     _comNum (serialPath) {
-        const m = /COM(\d+)/i.exec(serialPath || '');
-        return m ? Number(m[1]) : -1;
+        if (!serialPath) return -1;
+        // Windows: COMn
+        const comMatch = /COM(\d+)/i.exec(serialPath);
+        if (comMatch) return Number(comMatch[1]);
+        // macOS/Linux: trailing digits in /dev/tty* paths
+        const unixMatch = /(\d+)$/.exec(serialPath);
+        if (unixMatch) return Number(unixMatch[1]);
+        return -1;
     }
 
     /**

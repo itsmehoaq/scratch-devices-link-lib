@@ -13,13 +13,17 @@ const sleep = ms => {
  * Stop packaged Windy Link so dist/ and app.asar are not locked during rebuilds.
  */
 const stopRunningWindyLink = () => {
-    if (process.platform !== 'win32') {
-        return;
+    if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/IM', 'WindyLink.exe', '/F'], {
+            stdio: 'ignore',
+            windowsHide: true
+        });
+    } else {
+        // macOS / Linux: kill by process name
+        spawnSync('pkill', ['-f', 'WindyLink'], {
+            stdio: 'ignore'
+        });
     }
-    spawnSync('taskkill', ['/IM', 'WindyLink.exe', '/F'], {
-        stdio: 'ignore',
-        windowsHide: true
-    });
     sleep(400);
 };
 

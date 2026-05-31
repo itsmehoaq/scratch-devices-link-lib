@@ -41,13 +41,22 @@ const resolveToolBinary = (toolsPath, relativePath) => {
 
 /**
  * Why: MSI installs to Program Files where normal users cannot write build cache.
+ * On macOS, /Applications has the same restriction.
  * @param {string} baseDir runtime root beside the exe.
  * @returns {boolean}
  */
-const isInstalledInProgramFiles = baseDir => {
-    const normalized = path.resolve(baseDir).replace(/\//g, '\\').toLowerCase();
-    return normalized.includes('\\program files\\') ||
-        normalized.includes('\\program files (x86)\\');
+const isInstalledInProtectedDir = baseDir => {
+    const normalized = path.resolve(baseDir).toLowerCase();
+    if (os.platform() === 'win32') {
+        const winPath = normalized.replace(/\//g, '\\');
+        return winPath.includes('\\program files\\') ||
+            winPath.includes('\\program files (x86)\\');
+    }
+    if (os.platform() === 'darwin') {
+        return normalized.startsWith('/applications/');
+    }
+    // Linux: /usr, /opt are common protected paths
+    return normalized.startsWith('/usr/') || normalized.startsWith('/opt/');
 };
 
 /**
@@ -59,10 +68,19 @@ const resolveUserDataPath = baseDir => {
     if (process.env.WINDY_USER_DATA) {
         return process.env.WINDY_USER_DATA;
     }
-    if (process.pkg || isInstalledInProgramFiles(baseDir)) {
-        const localAppData = process.env.LOCALAPPDATA ||
-            path.join(os.homedir(), 'AppData', 'Local');
-        return path.join(localAppData, 'WindyLink');
+    if (process.pkg || isInstalledInProtectedDir(baseDir)) {
+        if (os.platform() === 'darwin') {
+            return path.join(os.homedir(), 'Library', 'Application Support', 'WindyLink');
+        }
+        if (os.platform() === 'win32') {
+            const localAppData = process.env.LOCALAPPDATA ||
+                path.join(os.homedir(), 'AppData', 'Local');
+            return path.join(localAppData, 'WindyLink');
+        }
+        // Linux: use XDG_DATA_HOME or ~/.local/share
+        const xdgData = process.env.XDG_DATA_HOME ||
+            path.join(os.homedir(), '.local', 'share');
+        return path.join(xdgData, 'WindyLink');
     }
     return path.join(baseDir, '.winblockData');
 };

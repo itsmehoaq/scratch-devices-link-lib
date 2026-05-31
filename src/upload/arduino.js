@@ -518,8 +518,12 @@ class Arduino {
                 return raw.toUpperCase();
             };
             const comNum = serialPath => {
-                const m = /COM(\d+)/i.exec(serialPath || '');
-                return m ? Number(m[1]) : -1;
+                if (!serialPath) return -1;
+                const comMatch = /COM(\d+)/i.exec(serialPath);
+                if (comMatch) return Number(comMatch[1]);
+                const unixMatch = /(\d+)$/.exec(serialPath);
+                if (unixMatch) return Number(unixMatch[1]);
+                return -1;
             };
             const prefUpper = (preferredPath || '').toUpperCase();
             const prefCom = comNum(preferredPath);
@@ -637,8 +641,12 @@ class Arduino {
                 return raw.toUpperCase();
             };
             const comNum = serialPath => {
-                const m = /COM(\d+)/i.exec(serialPath || '');
-                return m ? Number(m[1]) : -1;
+                if (!serialPath) return -1;
+                const comMatch = /COM(\d+)/i.exec(serialPath);
+                if (comMatch) return Number(comMatch[1]);
+                const unixMatch = /(\d+)$/.exec(serialPath);
+                if (unixMatch) return Number(unixMatch[1]);
+                return -1;
             };
             const currentComNum = comNum(currentPath);
             const vidRank = vid => {

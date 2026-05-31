@@ -1,0 +1,105 @@
+{
+    "$schema": "Libraries manifest for tools/Arduino/libraries",
+    "$description": "Managed by script/download-libraries.js – do not edit tools/Arduino/libraries directly.",
+
+    "arduino": [
+        {
+            "name": "Adafruit AHTX0",
+            "version": "2.0.6",
+            "description": "AHT10/AHT20/AHT30 I2C humidity and temperature sensor"
+        },
+        {
+            "name": "Adafruit BusIO",
+            "version": "1.17.4",
+            "description": "UART, I2C and SPI abstraction"
+        },
+        {
+            "name": "Adafruit GFX Library",
+            "version": "1.12.4",
+            "description": "Core graphics library for Adafruit displays"
+        },
+        {
+            "name": "Adafruit Unified Sensor",
+            "version": "1.1.15",
+            "dirName": "Adafruit_Sensor",
+            "description": "Unified sensor abstraction layer"
+        },
+        {
+            "name": "Adafruit SSD1306",
+            "version": "2.5.16",
+            "description": "SSD1306 OLED driver for 128x64 and 128x32 displays"
+        },
+        {
+            "name": "Adafruit TCS34725",
+            "version": "1.4.4",
+            "description": "TCS34725 color sensor"
+        },
+        {
+            "name": "Adafruit_VL53L0X",
+            "version": "1.2.5",
+            "description": "VL53L0X time-of-flight distance sensor"
+        },
+        {
+            "name": "ArduinoGraphics",
+            "version": "1.1.4",
+            "description": "Graphics primitives for Arduino displays"
+        },
+        {
+            "name": "AsyncTCP",
+            "version": "3.3.2",
+            "description": "Async TCP for ESP32"
+        },
+        {
+            "name": "ESP32Servo",
+            "version": "3.0.7.1",
+            "description": "Servo library for ESP32"
+        },
+        {
+            "name": "ESP Async WebServer",
+            "version": "3.6.0",
+            "dirName": "ESPAsyncWebServer",
+            "description": "Async HTTP/WebSocket server for ESP32"
+        },
+        {
+            "name": "Servo",
+            "version": "1.1.8",
+            "description": "Standard Servo library"
+        }
+    ],
+
+    "github": [
+        {
+            "owner": "openblockcc",
+            "repo": "avr-stl",
+            "tag": "v1.0.1",
+            "dirName": "avr-stl",
+            "description": "STL implementation for AVR"
+        },
+        {
+            "owner": "openblockcc",
+            "repo": "ServoK210",
+            "tag": "v1.0.0",
+            "dirName": "ServoK210",
+            "description": "Servo library for K210"
+        },
+        {
+            "owner": "openblockcc",
+            "repo": "SimpleList",
+            "tag": "v1.0.1",
+            "dirName": "SimpleList",
+            "description": "Simple linked-list for Arduino"
+        }
+    ],
+
+    "local": [
+        "Button",
+        "DS18B20",
+        "ESP_Scan",
+        "Led_Control",
+        "Motor",
+        "PIR",
+        "WS2812B"
+    ],
+
+    "_localNote": "Libraries listed in 'local' are custom in-house libraries bundled inside tools archives. They are NOT downloaded by this script – they are expected to already exist after running download-tools.js."
+}
