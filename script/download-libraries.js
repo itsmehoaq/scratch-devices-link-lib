@@ -11,6 +11,7 @@ const arduinoRoot = path.join(repoRoot, 'tools', 'Arduino');
 const arduinoCli = path.join(arduinoRoot,
     os.platform() === 'win32' ? 'arduino-cli.exe' : 'arduino-cli');
 const librariesDir = path.join(arduinoRoot, 'libraries');
+const arduinoCliConfigPath = path.join(arduinoRoot, 'arduino-cli.yaml');
 const manifestPath = path.join(__dirname, 'libraries.json');
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
@@ -55,6 +56,34 @@ const libraryExists = dirName => fs.existsSync(path.join(librariesDir, dirName))
  */
 const toDirName = name => name.replace(/ /g, '_');
 
+const runArduinoCli = (args, {stdio = 'pipe'} = {}) => {
+    execSync(`"${arduinoCli}" ${args}`, {stdio, windowsHide: true});
+};
+
+/**
+ * Point arduino-cli at tools/Arduino so `lib install` writes to tools/Arduino/libraries.
+ * (arduino-cli 0.35.x has no --library-dir flag on lib install.)
+ */
+const ensureArduinoCliConfig = () => {
+    if (dryRun) {
+        return;
+    }
+    if (!fs.existsSync(arduinoCliConfigPath)) {
+        runArduinoCli(`config init --dest-file "${arduinoCliConfigPath}"`);
+    }
+    runArduinoCli(
+        `config set directories.data "${arduinoRoot}" --config-file "${arduinoCliConfigPath}"`
+    );
+    runArduinoCli(
+        `config set directories.user "${arduinoRoot}" --config-file "${arduinoCliConfigPath}"`
+    );
+    runArduinoCli(
+        `config set directories.downloads "${path.join(arduinoRoot, 'staging')}" --config-file "${arduinoCliConfigPath}"`
+    );
+    console.log('  ↓ Updating Arduino library index ...');
+    runArduinoCli(`lib update-index --config-file "${arduinoCliConfigPath}"`);
+};
+
 // ── Arduino-CLI library install ──────────────────────────────────────────────
 const installArduinoLib = (name, version, explicitDirName) => {
     const dirName = explicitDirName || toDirName(name);
@@ -72,7 +101,7 @@ const installArduinoLib = (name, version, explicitDirName) => {
     }
 
     const spec = `${name}@${version}`;
-    const cmd = `"${arduinoCli}" lib install "${spec}" --library-dir "${librariesDir}" --no-deps`;
+    const cmd = `"${arduinoCli}" lib install "${spec}" --config-file "${arduinoCliConfigPath}" --no-deps`;
 
     if (dryRun) {
         console.log(`  [dry-run] ${cmd}`);
@@ -245,6 +274,7 @@ const main = async () => {
     // 1. Arduino Library Manager libraries
     const arduinoLibs = manifest.arduino || [];
     if (arduinoLibs.length > 0) {
+        ensureArduinoCliConfig();
         console.log(`\n── Arduino libraries (${arduinoLibs.length}) ──`);
         for (const lib of arduinoLibs) {
             const ok = installArduinoLib(lib.name, lib.version, lib.dirName);

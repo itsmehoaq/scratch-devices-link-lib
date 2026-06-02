@@ -212,6 +212,39 @@ class Arduino {
         return out;
     }
 
+    /**
+     * Large Windify audio clips are emitted as separate .c/.h sketch files so
+     * code.ino stays small (faster prototype generation).
+     * @param {string} code
+     * @returns {{ main: string, extraFiles: Record<string, string> }}
+     */
+    _extractWindifyExtraSketchFiles (code) {
+        const extraFiles = {};
+        if (typeof code !== 'string' || !code) {
+            return {main: code || '', extraFiles};
+        }
+        const re = /\/\/ WINDIFY_EXTRA_SKETCH_FILE:([^\n]+)\n([\s\S]*?)\/\/ END_WINDIFY_EXTRA_SKETCH_FILE\n?/g;
+        const main = code.replace(re, (full, name, body) => {
+            extraFiles[String(name).trim()] = body;
+            return '\n';
+        });
+        return {main, extraFiles};
+    }
+
+    _cleanupWindifyAudioSketchFiles () {
+        if (!fs.existsSync(this._codeFolderPath)) {
+            return;
+        }
+        for (const name of fs.readdirSync(this._codeFolderPath)) {
+            if (
+                name.startsWith('windify_audio_clip_') &&
+                (name.endsWith('.cpp') || name.endsWith('.c') || name.endsWith('.h'))
+            ) {
+                fs.unlinkSync(path.join(this._codeFolderPath, name));
+            }
+        }
+    }
+
     _libraryHasHeader (libDir, headerName) {
         if (!libDir || !headerName) return false;
         const candidates = [
@@ -354,9 +387,22 @@ class Arduino {
                 this._applySourceTransforms(code),
                 compileLibsForSanitize
             );
-            const hasAt32Markers = /AT32_|at32[_A-Za-z0-9]*/.test(transformed);
+            const {main, extraFiles} = this._extractWindifyExtraSketchFiles(transformed);
+            const hasAt32Markers = /AT32_|at32[_A-Za-z0-9]*/.test(main);
             try {
-                fs.writeFileSync(this._codeFilePath, transformed);
+                this._cleanupWindifyAudioSketchFiles();
+                for (const [fileName, fileBody] of Object.entries(extraFiles)) {
+                    const safeName = path.basename(fileName);
+                    if (!safeName || safeName !== fileName) {
+                        continue;
+                    }
+                    fs.writeFileSync(
+                        path.join(this._codeFolderPath, safeName),
+                        fileBody
+                    );
+                    this._sendstd(`Windify sketch file: ${safeName}\n`);
+                }
+                fs.writeFileSync(this._codeFilePath, main);
             } catch (err) {
                 return reject(err);
             }

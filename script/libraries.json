@@ -61,6 +61,11 @@
             "description": "Async HTTP/WebSocket server for ESP32"
         },
         {
+            "name": "ESP8266Audio",
+            "version": "2.4.1",
+            "description": "I2S audio playback — provides AudioOutputI2S.h (#include \"AudioOutputI2S.h\")"
+        },
+        {
             "name": "Servo",
             "version": "1.1.8",
             "description": "Standard Servo library"
@@ -97,6 +102,7 @@
         "ESP_Scan",
         "Led_Control",
         "Motor",
+        "pgmspace",
         "PIR",
         "WS2812B"
     ],
