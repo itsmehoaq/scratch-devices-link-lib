@@ -6,6 +6,12 @@ const yaml = require('js-yaml');
 const os = require('os');
 const {SerialPort} = require('serialport');
 const {resolveToolBinary} = require('../lib/runtime-paths');
+const {
+    MAX_FLASH_PROGRAM_BYTES,
+    WINDIFY_ESP32_16MB_APP_BYTES,
+    ESP32_DEFAULT_16MB_APP_BYTES,
+    WINDIFY_ESP32_16MB_PARTITIONS_CSV
+} = require('./upload-limits');
 
 const ARDUINO_CLI_STDOUT_GREEN_START = /Reading \||Writing \|/g;
 const ARDUINO_CLI_STDOUT_GREEN_END = /%/g;
@@ -14,6 +20,9 @@ const ARDUINO_CLI_STDOUT_RED_START = /can't open device|programmer is not respon
 const ARDUINO_CLI_STDERR_RED_IGNORE = /Executable segment sizes/g;
 
 const ABORT_STATE_CHECK_INTERVAL = 100;
+
+const SKETCH_STORAGE_SIZE_RE =
+    /Sketch uses (\d+) bytes \(\d+%\) of program storage space\. Maximum is (\d+) bytes/;
 
 /** Matches arduino-cli / esptool serial port open failures (upload retry). */
 const ESP_SERIAL_OPEN_ERROR_RE =
@@ -223,24 +232,59 @@ class Arduino {
         if (typeof code !== 'string' || !code) {
             return {main: code || '', extraFiles};
         }
-        const re = /\/\/ WINDIFY_EXTRA_SKETCH_FILE:([^\n]+)\n([\s\S]*?)\/\/ END_WINDIFY_EXTRA_SKETCH_FILE\n?/g;
-        const main = code.replace(re, (full, name, body) => {
-            extraFiles[String(name).trim()] = body;
-            return '\n';
-        });
-        return {main, extraFiles};
+        const END_MARKER = '// END_WINDIFY_EXTRA_SKETCH_FILE';
+        const START_PREFIX = '// WINDIFY_EXTRA_SKETCH_FILE:';
+        const mainLines = [];
+        const lines = code.split(/\r?\n/);
+        let i = 0;
+        while (i < lines.length) {
+            const line = lines[i];
+            if (line.startsWith(START_PREFIX)) {
+                const fileName = line.slice(START_PREFIX.length).trim();
+                const bodyLines = [];
+                i++;
+                while (i < lines.length && lines[i] !== END_MARKER) {
+                    bodyLines.push(lines[i]);
+                    i++;
+                }
+                if (i < lines.length) {
+                    i++;
+                }
+                if (fileName) {
+                    extraFiles[fileName] = `${bodyLines.join('\n')}\n`;
+                }
+                continue;
+            }
+            mainLines.push(line);
+            i++;
+        }
+        return {main: mainLines.join('\n'), extraFiles};
+    }
+
+    _isWindifyAudioClipSketchFile (name) {
+        return (
+            name.startsWith('windify_audio_clip_') &&
+            (name.endsWith('.cpp') ||
+                name.endsWith('.c') ||
+                name.endsWith('.h') ||
+                name.endsWith('.cpp.d') ||
+                name.endsWith('.c.d'))
+        );
     }
 
     _cleanupWindifyAudioSketchFiles () {
-        if (!fs.existsSync(this._codeFolderPath)) {
-            return;
-        }
-        for (const name of fs.readdirSync(this._codeFolderPath)) {
-            if (
-                name.startsWith('windify_audio_clip_') &&
-                (name.endsWith('.cpp') || name.endsWith('.c') || name.endsWith('.h'))
-            ) {
-                fs.unlinkSync(path.join(this._codeFolderPath, name));
+        const dirs = [
+            this._codeFolderPath,
+            path.join(this._buildPath, 'sketch')
+        ];
+        for (const dir of dirs) {
+            if (!fs.existsSync(dir)) {
+                continue;
+            }
+            for (const name of fs.readdirSync(dir)) {
+                if (this._isWindifyAudioClipSketchFile(name)) {
+                    fs.unlinkSync(path.join(dir, name));
+                }
             }
         }
     }
@@ -373,6 +417,129 @@ class Arduino {
         this._abort = true;
     }
 
+    /**
+     * @param {string} raw - plain .ino or JSON { v:1, main, files } from GUI.
+     * @returns {{ main: string, extraFiles: Record<string, string> }}
+     */
+    _parseUploadSketchPayload (raw) {
+        if (typeof raw !== 'string' || !raw) {
+            return {main: raw || '', extraFiles: {}};
+        }
+        const trimmed = raw.trimStart();
+        if (trimmed.startsWith('{')) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (
+                    parsed &&
+                    parsed.v === 1 &&
+                    typeof parsed.main === 'string' &&
+                    parsed.files &&
+                    typeof parsed.files === 'object'
+                ) {
+                    return {main: parsed.main, extraFiles: parsed.files};
+                }
+            } catch (e) {
+                // legacy plain sketch
+            }
+        }
+        return {main: raw, extraFiles: {}};
+    }
+
+    _hasWindifyAudioClipFiles (extraFiles) {
+        return Object.keys(extraFiles || {}).some(name =>
+            name.startsWith('windify_audio_clip_') && name.endsWith('.cpp')
+        );
+    }
+
+    _fqbnHas16MFlash () {
+        return typeof this._config.fqbn === 'string' &&
+            /FlashSize=16M/i.test(this._config.fqbn);
+    }
+
+    /**
+     * Why: generic "default" partition on 16M boards still caps APP at ~1.3 MB.
+     * Use a 16M table (or a Windify ~14 MB APP table when PCM is embedded).
+     * @param {boolean} hasWindifyAudio - sibling windify_audio_clip_*.cpp present.
+     * @returns {string} fqbn passed to arduino-cli compile.
+     */
+    _buildCompileFqbn (hasWindifyAudio) {
+        const fqbn = this._config.fqbn;
+        if (
+            !hasWindifyAudio ||
+            !this._isEsp32Target() ||
+            !this._fqbnHas16MFlash()
+        ) {
+            return fqbn;
+        }
+        return fqbn.replace(/PartitionScheme=[^,]+/, 'PartitionScheme=custom');
+    }
+
+    _writeEsp32PartitionTable (hasWindifyAudio) {
+        const partitionPath = path.join(this._codeFolderPath, 'partitions.csv');
+        if (!this._isEsp32Target() || !this._fqbnHas16MFlash()) {
+            if (fs.existsSync(partitionPath)) {
+                fs.unlinkSync(partitionPath);
+            }
+            return;
+        }
+        if (hasWindifyAudio) {
+            fs.writeFileSync(partitionPath, WINDIFY_ESP32_16MB_PARTITIONS_CSV);
+            this._sendstd(
+                `${ansi.yellow_dark}[build] Using 16 MB flash partition ` +
+                `(~14 MB APP) for Windify audio.\n`
+            );
+            return;
+        }
+        if (fs.existsSync(partitionPath)) {
+            fs.unlinkSync(partitionPath);
+        }
+    }
+
+    _appendEsp32FlashBuildProperties (args, sketchIdx, hasWindifyAudio) {
+        if (!this._isEsp32Target() || !this._fqbnHas16MFlash()) {
+            return;
+        }
+        if (hasWindifyAudio) {
+            args.splice(
+                sketchIdx,
+                0,
+                '--build-property',
+                `upload.maximum_size=${WINDIFY_ESP32_16MB_APP_BYTES}`
+            );
+            return;
+        }
+        args.splice(
+            sketchIdx,
+            0,
+            '--build-property',
+            'build.partitions=default_16MB',
+            '--build-property',
+            `upload.maximum_size=${ESP32_DEFAULT_16MB_APP_BYTES}`
+        );
+        this._sendstd(
+            `${ansi.yellow_dark}[build] Using 16 MB flash partition table (6.25 MB APP).\n`
+        );
+    }
+
+    _sketchStorageError (logText) {
+        const match = logText.match(SKETCH_STORAGE_SIZE_RE);
+        if (!match) {
+            return null;
+        }
+        const used = Number(match[1]);
+        const max = Number(match[2]);
+        if (!Number.isFinite(used) || !Number.isFinite(max) || used <= max) {
+            return null;
+        }
+        const usedMb = (used / (1024 * 1024)).toFixed(2);
+        const maxMb = (max / (1024 * 1024)).toFixed(2);
+        const flashMb = (MAX_FLASH_PROGRAM_BYTES / (1024 * 1024)).toFixed(0);
+        return (
+            `Sketch uses ${usedMb} MB of program storage; partition allows ${maxMb} MB ` +
+            `(${flashMb} MB flash). Use a shorter or smaller audio file.`
+        );
+    }
+
     build (code) {
         return new Promise((resolve, reject) => {
             if (!fs.existsSync(this._codeFolderPath)) {
@@ -383,14 +550,27 @@ class Arduino {
             this._ensureManualLibraryCompatHeaders(discoveredManualLibs);
             const compileLibsForSanitize = this._buildCompileLibraryPaths();
 
+            const {main: sketchMain, extraFiles: payloadFiles} =
+                this._parseUploadSketchPayload(code);
+
             const transformed = this._sanitizeSketchSource(
-                this._applySourceTransforms(code),
+                this._applySourceTransforms(sketchMain),
                 compileLibsForSanitize
             );
-            const {main, extraFiles} = this._extractWindifyExtraSketchFiles(transformed);
+            const fromMarkers = this._extractWindifyExtraSketchFiles(transformed);
+            let main = fromMarkers.main;
+            const extraFiles = Object.assign({}, fromMarkers.extraFiles, payloadFiles);
+            if (main.includes('// WINDIFY_EXTRA_SKETCH_FILE:')) {
+                return reject(new Error(
+                    'Windify audio files were not extracted from the sketch. ' +
+                    'Restart WindyLink (npm run start in scratch-devices-link-lib) or update WindyLink.exe.'
+                ));
+            }
+            const hasWindifyAudio = this._hasWindifyAudioClipFiles(extraFiles);
             const hasAt32Markers = /AT32_|at32[_A-Za-z0-9]*/.test(main);
             try {
                 this._cleanupWindifyAudioSketchFiles();
+                this._writeEsp32PartitionTable(hasWindifyAudio);
                 for (const [fileName, fileBody] of Object.entries(extraFiles)) {
                     const safeName = path.basename(fileName);
                     if (!safeName || safeName !== fileName) {
@@ -407,9 +587,10 @@ class Arduino {
                 return reject(err);
             }
 
+            const compileFqbn = this._buildCompileFqbn(hasWindifyAudio);
             const args = [
                 'compile',
-                '--fqbn', this._config.fqbn,
+                '--fqbn', compileFqbn,
                 '--warnings=none',
                 '--verbose',
                 '--build-path', this._buildPath,
@@ -432,6 +613,7 @@ class Arduino {
             }
 
             const sketchIdx = args.indexOf(this._codeFolderPath);
+            this._appendEsp32FlashBuildProperties(args, sketchIdx, hasWindifyAudio);
             if (Array.isArray(this._config.compilerDefines) && this._config.compilerDefines.length) {
                 const flags = this._config.compilerDefines
                     .map(d => String(d).trim())
@@ -457,8 +639,17 @@ class Arduino {
             this._sendstd(`Start building...\n`);
             this._attachSpawnError(arduinoCli, reject, 'Build');
 
+            let buildLog = '';
+            const appendBuildLog = chunk => {
+                buildLog += chunk;
+                if (buildLog.length > 256 * 1024) {
+                    buildLog = buildLog.slice(-256 * 1024);
+                }
+            };
+
             arduinoCli.stderr.on('data', buf => {
                 const data = buf.toString();
+                appendBuildLog(data);
 
                 if (data.search(ARDUINO_CLI_STDERR_RED_IGNORE) !== -1) { // eslint-disable-line no-negated-condition
                     this._sendstd(ansi.red + data);
@@ -469,6 +660,7 @@ class Arduino {
 
             arduinoCli.stdout.on('data', buf => {
                 const data = buf.toString();
+                appendBuildLog(data);
                 let ansiColor = null;
 
                 if (data.search(/Sketch uses|Global variables/g) === -1) {
@@ -494,8 +686,13 @@ class Arduino {
                     return resolve('Aborted');
                 case 0:
                     return resolve('Success');
-                case 1:
+                case 1: {
+                    const storageErr = this._sketchStorageError(buildLog);
+                    if (storageErr) {
+                        return reject(new Error(storageErr));
+                    }
                     return reject(new Error('Build failed'));
+                }
                 case 2:
                     return reject(new Error('Sketch not found'));
                 case 3:
@@ -934,3 +1131,4 @@ class Arduino {
 }
 
 module.exports = Arduino;
+module.exports.MAX_FLASH_PROGRAM_BYTES = MAX_FLASH_PROGRAM_BYTES;

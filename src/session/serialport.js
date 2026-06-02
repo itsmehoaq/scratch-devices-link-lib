@@ -843,7 +843,7 @@ class SerialportSession extends Session {
 
     async upload (params) {
         const {message, config, encoding} = params;
-        const code = new Buffer.from(message, encoding).toString();
+        const code = Buffer.from(message, encoding).toString();
 
         this.tool = new Arduino(this.peripheral.path, config, this.userDataPath,
             this.toolsPath, this.sendstd.bind(this), this.sendRemoteRequest.bind(this));
