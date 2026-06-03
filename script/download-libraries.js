@@ -5,29 +5,42 @@ const {execSync, spawn} = require('child_process');
 const axios = require('axios');
 const ProgressBar = require('progress');
 
-// ── Paths ────────────────────────────────────────────────────────────────────
-const repoRoot = path.resolve(__dirname, '..');
-const arduinoRoot = path.join(repoRoot, 'tools', 'Arduino');
-const arduinoCli = path.join(arduinoRoot,
-    os.platform() === 'win32' ? 'arduino-cli.exe' : 'arduino-cli');
-const librariesDir = path.join(arduinoRoot, 'libraries');
-const arduinoCliConfigPath = path.join(arduinoRoot, 'arduino-cli.yaml');
-const manifestPath = path.join(__dirname, 'libraries.json');
-
 // ── CLI flags ────────────────────────────────────────────────────────────────
-const args = new Set(process.argv.slice(2));
+const rawArgs = process.argv.slice(2);
+const args = new Set(rawArgs);
 const shouldHelp = args.has('--help') || args.has('-h');
 const forceReinstall = args.has('--force');
 const dryRun = args.has('--dry-run');
+
+const getFlagValue = name => {
+    const index = rawArgs.indexOf(name);
+    if (index === -1 || index + 1 >= rawArgs.length) {
+        return '';
+    }
+    return rawArgs[index + 1];
+};
+
+// ── Paths ────────────────────────────────────────────────────────────────────
+const repoRoot = path.resolve(__dirname, '..');
+const toolsRoot = getFlagValue('--tools-root') || path.join(repoRoot, 'tools');
+const arduinoRoot = path.join(path.resolve(toolsRoot), 'Arduino');
+const arduinoCli = path.join(
+    arduinoRoot,
+    os.platform() === 'win32' ? 'arduino-cli.exe' : 'arduino-cli'
+);
+const librariesDir = path.join(arduinoRoot, 'libraries');
+const arduinoCliConfigPath = path.join(arduinoRoot, 'arduino-cli.yaml');
+const manifestPath = path.join(__dirname, 'libraries.json');
 
 const printUsage = () => {
     console.log([
         'Usage: node script/download-libraries.js [--force] [--dry-run]',
         '',
         'Installs Arduino libraries listed in script/libraries.json into',
-        'tools/Arduino/libraries using arduino-cli and direct GitHub downloads.',
+        '<tools-root>/Arduino/libraries using arduino-cli and direct GitHub downloads.',
         '',
         'Options:',
+        '  --tools-root <path>  Tools directory containing Arduino/ (default: ./tools)',
         '  --force     Remove existing library before installing (re-download)',
         '  --dry-run   Print what would be done without making changes',
         '  --help, -h  Show this help message'
@@ -248,13 +261,17 @@ const main = async () => {
     // Pre-flight checks
     if (!fs.existsSync(arduinoRoot)) {
         console.error(`Arduino tools directory not found: ${arduinoRoot}`);
-        console.error('Run "node script/download-tools.js" first.');
+        console.error(
+            'Run "node script/download-tools.js" first (or pass --tools-root).'
+        );
         process.exit(1);
     }
 
     if (!fs.existsSync(arduinoCli)) {
         console.error(`arduino-cli not found: ${arduinoCli}`);
-        console.error('Run "node script/download-tools.js" first.');
+        console.error(
+            'Run "node script/download-tools.js" first (or pass --tools-root).'
+        );
         process.exit(1);
     }
 
@@ -306,6 +323,7 @@ const main = async () => {
     ).length;
 
     console.log(`\n── Summary ──`);
+    console.log(`  Tools root: ${path.resolve(toolsRoot)}`);
     console.log(`  Libraries directory: ${librariesDir}`);
     console.log(`  Total libraries on disk: ${installed}`);
     console.log(`  Managed (arduino + github): ${totalManaged}`);

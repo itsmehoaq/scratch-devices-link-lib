@@ -10,11 +10,31 @@ const {path7za} = require('7zip-bin');
 // GitHub API URL, fill in your repository and username
 const user = 'winblockcc';
 const repo = 'winblock-tools';
-const downloadPath = './tmp'; // Path to store downloaded files (cached)
-const extractPath = './tools'; // Path where files will be extracted
+const repoRoot = path.resolve(__dirname, '..');
+const downloadPath = path.join(repoRoot, 'tmp');
 
 const releaseApiUrl = `https://api.github.com/repos/${user}/${repo}/releases/latest`;
-const systemPlatform = os.platform(); // 'win32', 'linux', 'darwin'
+const argv = process.argv.slice(2);
+
+/**
+ * @returns {{platform: string, extractPath: string}}
+ */
+const parseCli = () => {
+    let platform = os.platform();
+    let extractPath = path.join(repoRoot, 'tools');
+
+    for (let i = 0; i < argv.length; i++) {
+        if (argv[i] === '--platform' && argv[i + 1]) {
+            platform = argv[++i];
+        } else if (argv[i] === '--extract-path' && argv[i + 1]) {
+            extractPath = path.resolve(argv[++i]);
+        }
+    }
+
+    return {platform, extractPath};
+};
+
+const {platform: targetPlatform, extractPath} = parseCli();
 
 // Helper function to format bytes into human-readable units
 const formatBytes = bytes => {
@@ -149,11 +169,13 @@ const downloadAndVerifyFile = async (fileUrl, filePath, expectedChecksum) => new
 // Download files
 const downloadReleaseAssets = async () => {
     try {
+        console.log(`[download-tools] platform=${targetPlatform} extract=${extractPath}`);
         const {data} = await axios.get(releaseApiUrl);
-        const assets = data.assets.filter(asset => asset.name.endsWith('.7z') && asset.name.includes(systemPlatform));
+        const assets = data.assets.filter(asset =>
+            asset.name.endsWith('.7z') && asset.name.includes(targetPlatform));
 
         if (assets.length === 0) {
-            console.log(`No 7z file found for platform: ${systemPlatform}`);
+            console.log(`No 7z file found for platform: ${targetPlatform}`);
             return false;
         }
 

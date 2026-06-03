@@ -1,6 +1,6 @@
 {
   "name": "windify-block",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Future Academy local hardware link server for https://stem.windify.edu.vn/",
   "main": "src/index.js",
   "bin": {
@@ -14,6 +14,8 @@
     "fetch": "rimraf tools firmwares && node script/download-tools.js && node script/download-firmwares.js && node script/download-libraries.js",
     "fetch:libs": "node script/download-libraries.js",
     "fetch:libs:force": "node script/download-libraries.js --force",
+    "fetch:libs:mac": "node script/download-libraries.js --tools-root tools-mac",
+    "fetch:libs:mac:force": "node script/download-libraries.js --tools-root tools-mac --force",
     "fetch:small": "npm run fetch && npm run tools:prune && npm run tools:archive",
     "start": "rimraf ../.winblockData/link && node test/start-server.js --log-level=info",
     "start:debug": "rimraf ../.winblockData/link && node test/start-server.js --log-level=debug",
@@ -36,11 +38,16 @@
     "build:gui:mac:x64": "node script/build-gui-darwin.js --arch x64",
     "build:exe:mac": "pkg . --targets node18-macos-x64 --output dist/WindyLink",
     "build:exe:mac:arm64": "pkg . --targets node18-macos-arm64 --output dist/WindyLink",
+    "build:exe:mac:arm64:from-win": "pkg . --targets node18-macos-arm64 --output dist/WindyLink --no-bytecode --public-packages \"*\" --public",
+    "fetch:tools:mac": "node script/download-tools.js --platform darwin --extract-path tools-mac",
+    "fetch:mac:from-win": "node script/download-firmwares.js && npm run fetch:tools:mac && npm run fetch:libs:mac",
     "package:dist": "node script/package-dist.js",
+    "package:dist:mac": "node script/package-dist-mac.js",
     "prepare:installer-payload": "node script/prepare-installer-payload.js",
     "prepare:installer-payload:gui": "node script/prepare-installer-payload.js --gui",
     "build:setup": "node script/build-setup.js",
     "release:win": "npm run build:exe:win && npm run package:dist",
+    "release:mac:arm64:from-win": "npm run build:exe:mac:arm64:from-win && npm run package:dist:mac",
     "release:setup": "npm run build:gui:win && npm run prepare:installer-payload:gui && npm run build:setup",
     "release:setup:cli": "npm run build:exe:win && npm run prepare:installer-payload && npm run build:setup"
   },

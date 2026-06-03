@@ -68,9 +68,6 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\WindyLink.exe"; Tasks: deskto
 Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "ToolsPath"; ValueData: "{commonappdata}\Windify\Future Academy\tools"
 
-[UninstallDelete]
-Type: filesandordirs; Name: "{commonappdata}\Windify\Future Academy"
-
 [Run]
 Filename: "{tmp}\7za.exe"; Parameters: "x ""{tmp}\tools.7z"" -o""{commonappdata}\Windify\Future Academy"" -y"; WorkingDir: "{tmp}"; StatusMsg: "Extracting build tools (this may take a few minutes)..."; Flags: runhidden waituntilterminated; Check: ShouldExtractTools
 
@@ -150,10 +147,69 @@ begin
 end;
 #endif
 
-function ShouldExtractTools: Boolean;
+function ShouldExtractToolsInternal: Boolean;
+var
+  ToolsRoot: String;
+  LibrariesRoot: String;
+  RequiredLibs: TArrayOfString;
+  I: Integer;
 begin
   ForceDirectories(ExpandConstant('{commonappdata}\Windify\Future Academy'));
-  Result := not FileExists(ExpandConstant('{commonappdata}\Windify\Future Academy\tools\Arduino\arduino-cli.exe'));
+  ToolsRoot := ExpandConstant('{commonappdata}\Windify\Future Academy\tools');
+  LibrariesRoot := ToolsRoot + '\Arduino\libraries';
+
+  { First install or broken tools folder: always extract. }
+  if not FileExists(ToolsRoot + '\Arduino\arduino-cli.exe') then
+  begin
+    Log('Tools extract required: missing arduino-cli.exe');
+    Result := True;
+    Exit;
+  end;
+
+  { Required libraries from script/libraries.json (dirName or resolved folder name). }
+  SetArrayLength(RequiredLibs, 24);
+  RequiredLibs[0] := 'Adafruit_AHTX0';
+  RequiredLibs[1] := 'Adafruit_BusIO';
+  RequiredLibs[2] := 'Adafruit_GFX_Library';
+  RequiredLibs[3] := 'Adafruit_Sensor';
+  RequiredLibs[4] := 'Adafruit_SSD1306';
+  RequiredLibs[5] := 'Adafruit_TCS34725';
+  RequiredLibs[6] := 'Adafruit_VL53L0X';
+  RequiredLibs[7] := 'ArduinoGraphics';
+  RequiredLibs[8] := 'AsyncTCP';
+  RequiredLibs[9] := 'ESP32Servo';
+  RequiredLibs[10] := 'ESPAsyncWebServer';
+  RequiredLibs[11] := 'ESP8266Audio';
+  RequiredLibs[12] := 'Servo';
+  RequiredLibs[13] := 'avr-stl';
+  RequiredLibs[14] := 'ServoK210';
+  RequiredLibs[15] := 'SimpleList';
+  RequiredLibs[16] := 'Button';
+  RequiredLibs[17] := 'DS18B20';
+  RequiredLibs[18] := 'ESP_Scan';
+  RequiredLibs[19] := 'Led_Control';
+  RequiredLibs[20] := 'Motor';
+  RequiredLibs[21] := 'pgmspace';
+  RequiredLibs[22] := 'PIR';
+  RequiredLibs[23] := 'WS2812B';
+
+  for I := 0 to GetArrayLength(RequiredLibs) - 1 do
+  begin
+    if not DirExists(LibrariesRoot + '\' + RequiredLibs[I]) then
+    begin
+      Log(Format('Tools extract required: missing library "%s"', [RequiredLibs[I]]));
+      Result := True;
+      Exit;
+    end;
+  end;
+
+  Log('Tools extract skipped: required libraries already present.');
+  Result := False;
+end;
+
+function ShouldExtractTools: Boolean;
+begin
+  Result := ShouldExtractToolsInternal;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

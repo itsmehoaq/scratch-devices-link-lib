@@ -28,6 +28,40 @@ Optional env vars:
 - `WINDY_STARTUP_URL` — override startup browser URL
 - `WINDY_OPEN_STARTUP_URL=0` — disable opening the browser on start
 
+### Build macOS ARM64 portable release from Windows
+
+Cross-builds the CLI binary with `pkg` (no V8 bytecode), stages macOS build tools and firmwares, and writes a zip. **Electron GUI / `.app` installers still require building on macOS** (`npm run build:gui:mac:arm64`).
+
+Prerequisites (once per machine, or when tools/firmwares change):
+
+```powershell
+npm install
+npm run fetch:mac:from-win
+```
+
+Build the release:
+
+```powershell
+npm run release:mac:arm64:from-win
+```
+
+Output:
+
+```
+dist/FutureAcademy-<version>-macos-arm64-portable.zip
+dist/staging-mac/Future Academy/
+├── WindyLink
+├── tools/
+├── firmwares/
+└── README-mac-portable.txt
+```
+
+On a Mac before end users run it, ad-hoc sign the binary:
+
+```bash
+codesign --sign - ./WindyLink
+```
+
 ### Build Windows terminal exe
 
 ```powershell
