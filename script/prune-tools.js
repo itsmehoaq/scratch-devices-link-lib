@@ -9,8 +9,10 @@ const args = new Set(process.argv.slice(2));
 const shouldApply = args.has('--apply');
 const shouldHelp = args.has('--help') || args.has('-h');
 
+const arduinoCliBin = process.platform === 'win32' ? 'Arduino/arduino-cli.exe' : 'Arduino/arduino-cli';
+
 const requiredPaths = [
-    'Arduino/arduino-cli.exe',
+    arduinoCliBin,
     'Arduino/packages/arduino/hardware/avr',
     'Arduino/packages/arduino/tools/avr-gcc',
     'Arduino/packages/arduino/tools/avrdude',

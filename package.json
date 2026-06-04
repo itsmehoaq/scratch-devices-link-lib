@@ -18,6 +18,8 @@
     "fetch:libs:mac": "node script/download-libraries.js --tools-root tools-mac",
     "fetch:libs:mac:force": "node script/download-libraries.js --tools-root tools-mac --force",
     "fetch:small": "npm run fetch && npm run tools:prune && npm run tools:archive",
+    "setup:arduino": "node script/setup-arduino.js",
+    "build:release": "npm run setup:arduino && npm run tools:prune -- --apply && npm run tools:archive -- --overwrite",
     "start": "rimraf ../.winblockData/link && node test/start-server.js --log-level=info",
     "start:debug": "rimraf ../.winblockData/link && node test/start-server.js --log-level=debug",
     "clean": "rimraf ../.winblockData/link tools firmwares",
