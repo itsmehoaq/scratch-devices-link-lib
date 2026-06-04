@@ -1,0 +1,96 @@
+name: Release Tools
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Arduino CLI + install cores
+        run: npm run setup:arduino
+
+      - name: Prune unused toolchains
+        run: npm run tools:prune -- --apply
+
+      - name: Archive tools
+        run: npm run tools:archive -- --overwrite
+
+      # ── Unix (macOS) ────────────────────────────────────────────────────────
+      - name: Prepare artifacts (Unix)
+        if: runner.os != 'Windows'
+        id: meta_unix
+        shell: bash
+        run: |
+          ARCHIVE=$(ls tmp/tools-pruned-*.7z)
+          CHECKSUM="${ARCHIVE%.7z}-checksums-sha256.txt"
+          shasum -a 256 "$ARCHIVE" | awk '{print $1 "  " $2}' > "$CHECKSUM"
+          echo "archive=$ARCHIVE"       >> $GITHUB_OUTPUT
+          echo "checksum=$CHECKSUM"     >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      # ── Windows ─────────────────────────────────────────────────────────────
+      - name: Prepare artifacts (Windows)
+        if: runner.os == 'Windows'
+        id: meta_win
+        shell: pwsh
+        run: |
+          $name    = (Get-ChildItem tmp\tools-pruned-*.7z | Select-Object -First 1).Name
+          $archive = "tmp/$name"
+          $checksum = $archive -replace '\.7z$', '-checksums-sha256.txt'
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -FilePath $checksum -Encoding ascii -NoNewline
+          "archive=$archive"   | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "checksum=$checksum" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $event = "${{ github.event_name }}"
+          if ($event -eq "workflow_dispatch") {
+            "tag=${{ inputs.tag }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
+            "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      # ── Upload ──────────────────────────────────────────────────────────────
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta_unix.outputs.tag || steps.meta_win.outputs.tag }}
+          name: ${{ steps.meta_unix.outputs.tag || steps.meta_win.outputs.tag }}
+          draft: false
+          prerelease: false
+          files: |
+            ${{ steps.meta_unix.outputs.archive  || steps.meta_win.outputs.archive }}
+            ${{ steps.meta_unix.outputs.checksum || steps.meta_win.outputs.checksum }}
