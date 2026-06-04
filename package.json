@@ -1,6 +1,6 @@
 {
   "name": "windify-block",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Future Academy local hardware link server for https://stem.windify.edu.vn/",
   "main": "src/index.js",
   "bin": {
@@ -14,6 +14,7 @@
     "fetch": "rimraf tools firmwares && node script/download-tools.js && node script/download-firmwares.js && node script/download-libraries.js",
     "fetch:libs": "node script/download-libraries.js",
     "fetch:libs:force": "node script/download-libraries.js --force",
+    "verify:libs": "node script/verify-required-libraries.js",
     "fetch:libs:mac": "node script/download-libraries.js --tools-root tools-mac",
     "fetch:libs:mac:force": "node script/download-libraries.js --tools-root tools-mac --force",
     "fetch:small": "npm run fetch && npm run tools:prune && npm run tools:archive",
@@ -48,8 +49,11 @@
     "build:setup": "node script/build-setup.js",
     "release:win": "npm run build:exe:win && npm run package:dist",
     "release:mac:arm64:from-win": "npm run build:exe:mac:arm64:from-win && npm run package:dist:mac",
+    "release:app-zip": "node script/package-app-zip.js",
     "release:setup": "npm run build:gui:win && npm run prepare:installer-payload:gui && npm run build:setup",
-    "release:setup:cli": "npm run build:exe:win && npm run prepare:installer-payload && npm run build:setup"
+    "release:setup:cli": "npm run build:exe:win && npm run prepare:installer-payload && npm run build:setup",
+    "release": "npm run release:setup && npm run release:app-zip",
+    "publish:update-server": "node script/publish-to-update-server.js"
   },
   "build": {
     "appId": "edu.windify.future-academy.link",

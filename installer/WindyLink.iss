@@ -167,7 +167,7 @@ begin
   end;
 
   { Required libraries from script/libraries.json (dirName or resolved folder name). }
-  SetArrayLength(RequiredLibs, 24);
+  SetArrayLength(RequiredLibs, 25);
   RequiredLibs[0] := 'Adafruit_AHTX0';
   RequiredLibs[1] := 'Adafruit_BusIO';
   RequiredLibs[2] := 'Adafruit_GFX_Library';
@@ -192,6 +192,7 @@ begin
   RequiredLibs[21] := 'pgmspace';
   RequiredLibs[22] := 'PIR';
   RequiredLibs[23] := 'WS2812B';
+  RequiredLibs[24] := 'Windify';
 
   for I := 0 to GetArrayLength(RequiredLibs) - 1 do
   begin

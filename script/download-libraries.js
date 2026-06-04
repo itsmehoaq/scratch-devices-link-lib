@@ -31,6 +31,10 @@ const arduinoCli = path.join(
 const librariesDir = path.join(arduinoRoot, 'libraries');
 const arduinoCliConfigPath = path.join(arduinoRoot, 'arduino-cli.yaml');
 const manifestPath = path.join(__dirname, 'libraries.json');
+const {
+    getRequiredLibraryDirs,
+    verifyRequiredLibraryDirs
+} = require('./required-library-dirs');
 
 const printUsage = () => {
     console.log([
@@ -314,6 +318,24 @@ const main = async () => {
     if (localLibs.length > 0) {
         console.log(`\n── Local (bundled) libraries (${localLibs.length}) ──`);
         verifyLocalLibs(localLibs);
+    }
+
+    const requiredDirs = getRequiredLibraryDirs(manifest);
+    console.log(`\n── Required library checkpoint (${requiredDirs.length}) ──`);
+    const {missing, present} = verifyRequiredLibraryDirs(librariesDir, requiredDirs);
+    for (const dirName of present) {
+        console.log(`  ✓ ${dirName}`);
+    }
+    for (const dirName of missing) {
+        console.error(`  ✗ MISSING ${dirName}`);
+    }
+    if (missing.length > 0) {
+        console.error(
+            `\nCheckpoint failed: ${missing.length} required library folder(s) missing.`
+        );
+        if (!dryRun) {
+            process.exit(1);
+        }
     }
 
     // Summary

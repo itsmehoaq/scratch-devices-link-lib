@@ -37,6 +37,7 @@
         {
             "name": "Adafruit_VL53L0X",
             "version": "1.2.5",
+            "dirName": "Adafruit_VL53L0X",
             "description": "VL53L0X time-of-flight distance sensor"
         },
         {
