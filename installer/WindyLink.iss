@@ -66,10 +66,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\WindyLink.exe"; Tasks: deskto
 
 [Registry]
 Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "ToolsPath"; ValueData: "{commonappdata}\Windify\Future Academy\tools"
-
-[Run]
-Filename: "{tmp}\7za.exe"; Parameters: "x ""{tmp}\tools.7z"" -o""{commonappdata}\Windify\Future Academy"" -y"; WorkingDir: "{tmp}"; StatusMsg: "Extracting build tools (this may take a few minutes)..."; Flags: runhidden waituntilterminated; Check: ShouldExtractTools
+Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "ToolsPath"; ValueData: "{app}\tools"
 
 [Code]
 function GetNodeVersion: String;
@@ -154,8 +151,7 @@ var
   RequiredLibs: TArrayOfString;
   I: Integer;
 begin
-  ForceDirectories(ExpandConstant('{commonappdata}\Windify\Future Academy'));
-  ToolsRoot := ExpandConstant('{commonappdata}\Windify\Future Academy\tools');
+  ToolsRoot := ExpandConstant('{app}\tools');
   LibrariesRoot := ToolsRoot + '\Arduino\libraries';
 
   { First install or broken tools folder: always extract. }
@@ -213,11 +209,84 @@ begin
   Result := ShouldExtractToolsInternal;
 end;
 
+function ExtractToolsArchive: Boolean;
+var
+  ResultCode: Integer;
+  SevenZip: String;
+  Archive: String;
+  DestRoot: String;
+  Params: String;
+begin
+  SevenZip := ExpandConstant('{tmp}\7za.exe');
+  Archive := ExpandConstant('{tmp}\tools.7z');
+  DestRoot := ExpandConstant('{app}');
+
+  if not FileExists(SevenZip) then
+  begin
+    MsgBox('Missing 7-Zip helper in installer temp folder. Antivirus may have removed it.', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+  if not FileExists(Archive) then
+  begin
+    MsgBox('Missing tools.7z in installer temp folder.', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  ForceDirectories(DestRoot);
+  Params := 'x "' + Archive + '" -o"' + DestRoot + '" -y';
+
+  WizardForm.StatusLabel.Caption := 'Extracting build tools (this may take a few minutes)...';
+  WizardForm.ProgressGauge.Style := npbstMarquee;
+  try
+    if not Exec(SevenZip, Params, ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      MsgBox(
+        'Could not run 7-Zip to extract Arduino tools.' + #13#10 +
+        'Windows Defender or SmartScreen may have blocked the installer.' + #13#10#13#10 +
+        'Try: unblock the setup file (Properties → Unblock), allow the installer in antivirus, then run again.',
+        mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    if (ResultCode <> 0) and (ResultCode <> 1) then
+    begin
+      MsgBox(
+        ExpandConstant('Extracting build tools failed (7-Zip exit code ') + IntToStr(ResultCode) + ').' + #13#10 +
+        'Check free disk space on the install drive and antivirus logs.',
+        mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    if not FileExists(DestRoot + '\tools\Arduino\arduino-cli.exe') then
+    begin
+      MsgBox(
+        'Build tools were not extracted correctly (arduino-cli.exe missing).' + #13#10 +
+        'Allow Future Academy in Windows Security, then reinstall.',
+        mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    Result := True;
+  finally
+    WizardForm.ProgressGauge.Style := npbstNormal;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
     if not EnsureNodeJs then
       Abort;
+    if ShouldExtractToolsInternal then
+    begin
+      if not ExtractToolsArchive then
+        Abort;
+    end;
   end;
 end;

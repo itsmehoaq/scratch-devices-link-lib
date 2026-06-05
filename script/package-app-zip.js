@@ -1,6 +1,12 @@
 /**
- * Zip the Electron GUI (win-unpacked) for portable distribution / update server upload.
+ * Zip portable Future Academy (Electron GUI + tools + firmwares).
  * Output: dist/FutureAcademy-<version>-x64-app.zip
+ *
+ * Layout after unzip:
+ *   Future Academy/
+ *     WindyLink.exe
+ *     tools/          — arduino-cli, cores, libraries
+ *     firmwares/      — prebuilt AVR firmwares
  */
 const {spawnSync} = require('child_process');
 const fs = require('fs');
@@ -13,6 +19,10 @@ const pkg = require('../package.json');
 const zipName = `FutureAcademy-${pkg.version}-x64-app.zip`;
 const zipPath = path.join(repoRoot, 'dist', zipName);
 const stagingRoot = path.join(repoRoot, 'dist', 'staging-app', 'Future Academy');
+const toolsRoot = path.join(repoRoot, 'tools');
+const firmwaresRoot = path.join(repoRoot, 'firmwares');
+const appIconPath = path.join(repoRoot, 'assets', 'FutureAcademy.ico');
+const arduinoCliPath = path.join(toolsRoot, 'Arduino', 'arduino-cli.exe');
 
 const formatBytes = bytes => {
     if (bytes >= 1024 * 1024 * 1024) {
@@ -74,6 +84,18 @@ const main = () => {
         process.exit(1);
     }
 
+    if (!fs.existsSync(arduinoCliPath)) {
+        console.error(`Missing tools: ${arduinoCliPath}`);
+        console.error('Run npm run ensure:tools or npm run fetch:local first.');
+        process.exit(1);
+    }
+
+    if (!fs.existsSync(firmwaresRoot)) {
+        console.error(`Missing firmwares directory: ${firmwaresRoot}`);
+        console.error('Run npm run ensure:tools first.');
+        process.exit(1);
+    }
+
     if (fs.existsSync(stagingRoot)) {
         fs.rmSync(stagingRoot, {recursive: true, force: true});
     }
@@ -81,9 +103,38 @@ const main = () => {
 
     console.log(`Staging GUI from ${guiUnpacked}…`);
     copyDir(guiUnpacked, stagingRoot);
+
+    console.log(`Staging tools from ${toolsRoot}…`);
+    copyDir(toolsRoot, path.join(stagingRoot, 'tools'));
+
+    console.log(`Staging firmwares from ${firmwaresRoot}…`);
+    copyDir(firmwaresRoot, path.join(stagingRoot, 'firmwares'));
+
+    if (fs.existsSync(appIconPath) && !fs.existsSync(path.join(stagingRoot, 'FutureAcademy.ico'))) {
+        fs.copyFileSync(appIconPath, path.join(stagingRoot, 'FutureAcademy.ico'));
+    }
+
     fs.writeFileSync(
         path.join(stagingRoot, 'version.txt'),
         `${pkg.version}\n`,
+        'utf8'
+    );
+
+    fs.writeFileSync(
+        path.join(stagingRoot, 'README-win-portable.txt'),
+        [
+            'Future Academy — Windows portable bundle',
+            '',
+            '1. Unzip this folder anywhere (e.g. D:\\Future Academy).',
+            '2. Run WindyLink.exe (no installer required).',
+            '3. tools/ and firmwares/ must stay beside WindyLink.exe.',
+            '',
+            'User data: %LOCALAPPDATA%\\WindyLink',
+            'Editor: https://stem.windify.edu.vn/',
+            '',
+            'Optional: set WINDY_TOOLS_PATH if you move tools elsewhere.',
+            ''
+        ].join('\n'),
         'utf8'
     );
 
@@ -95,6 +146,7 @@ const main = () => {
 
     const size = fs.statSync(zipPath).size;
     console.log(`\nApp zip ready: dist/${zipName} (${formatBytes(size)})`);
+    console.log('Contains: GUI + tools/ + firmwares/ — unzip and run WindyLink.exe');
     console.log('Upload to scratch-link-server: npm run seed:releases (from server repo)');
 };
 

@@ -12,6 +12,16 @@ const resolveRuntimeBaseDir = () => {
     if (process.pkg) {
         return path.dirname(process.execPath);
     }
+    if (process.versions.electron) {
+        try {
+            const {app} = require('electron'); // eslint-disable-line global-require
+            if (app.isPackaged) {
+                return path.dirname(process.execPath);
+            }
+        } catch (err) {
+            // CLI / tests — not in Electron main process
+        }
+    }
     return path.resolve(__dirname, '../..');
 };
 
@@ -125,12 +135,18 @@ const resolveToolsPath = baseDir => {
         return process.env.WINDY_TOOLS_PATH;
     }
 
+    const localTools = path.join(baseDir, 'tools');
+    const localCli = resolveToolBinary(localTools, path.join('Arduino', 'arduino-cli'));
+    if (fs.existsSync(localCli)) {
+        return localTools;
+    }
+
     const installInfo = readInstallRegistry();
     if (installInfo && installInfo.toolsPath && fs.existsSync(installInfo.toolsPath)) {
         return installInfo.toolsPath;
     }
 
-    return path.join(baseDir, 'tools');
+    return localTools;
 };
 
 /**

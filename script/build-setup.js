@@ -96,3 +96,18 @@ if (!fs.existsSync(setupOut)) {
 
 const setupSize = fs.statSync(setupOut).size;
 console.log(`Setup created: ${setupOut} (${formatBytes(setupSize)})`);
+
+if (process.env.WIN_SIGN_PFX_PATH) {
+    const sign = spawnSync('node', [path.join(__dirname, 'sign-windows-artifacts.js'), setupOut], {
+        cwd: repoRoot,
+        stdio: 'inherit'
+    });
+    if (sign.status !== 0) {
+        process.exit(sign.status || 1);
+    }
+} else {
+    console.warn(
+        '[build:setup] Installer is unsigned — Windows 11 SmartScreen may block it.\n' +
+        '  Set WIN_SIGN_PFX_PATH (+ WIN_SIGN_PFX_PASSWORD) to sign, or see docs/installer-windows.md'
+    );
+}

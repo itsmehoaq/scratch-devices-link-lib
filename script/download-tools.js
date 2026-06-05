@@ -7,13 +7,16 @@ const crypto = require('crypto');
 const {extractFull} = require('node-7z');
 const {path7za} = require('7zip-bin');
 
-// GitHub API URL, fill in your repository and username
-const user = 'winblockcc';
-const repo = 'winblock-tools';
+// GitHub API URL — override when winblock-tools is private or moved
+const user = process.env.WINBLOCK_TOOLS_USER || 'winblockcc';
+const repo = process.env.WINBLOCK_TOOLS_REPO || 'winblock-tools';
+const releaseTag = process.env.WINBLOCK_TOOLS_TAG;
 const repoRoot = path.resolve(__dirname, '..');
 const downloadPath = path.join(repoRoot, 'tmp');
 
-const releaseApiUrl = `https://api.github.com/repos/${user}/${repo}/releases/latest`;
+const releaseApiUrl = releaseTag ?
+    `https://api.github.com/repos/${user}/${repo}/releases/tags/${releaseTag}` :
+    `https://api.github.com/repos/${user}/${repo}/releases/latest`;
 const argv = process.argv.slice(2);
 
 /**
@@ -220,7 +223,16 @@ const downloadReleaseAssets = async () => {
 
         return true;
     } catch (error) {
-        console.error('Error fetching release:', error);
+        const status = error.response && error.response.status;
+        console.error('Error fetching release:', error.message || error);
+        if (status === 404) {
+            console.error(
+                `[download-tools] GitHub release not found (${user}/${repo}).\n` +
+                '  • Set TOOLS_7Z_PATH or WINDY_TOOLS_SOURCE and run: npm run fetch:local\n' +
+                '  • Or set WINBLOCK_TOOLS_USER / WINBLOCK_TOOLS_REPO / WINBLOCK_TOOLS_TAG\n' +
+                '  • Or copy tools from C:\\Program Files\\Future Academy\\tools'
+            );
+        }
         return false;
     }
 };

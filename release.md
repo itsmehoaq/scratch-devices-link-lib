@@ -7,15 +7,30 @@ Windows local hardware link server for [Windify Block](https://stem.windify.edu.
 ### Build (maintainers)
 
 ```bash
+npm install
 npm run release
 ```
+
+`release` runs `ensure:tools` first (downloads `tools/` + `firmwares/` via `fetch:small` when missing), then builds the setup EXE and app zip.
+
+Force re-download tools:
+
+```bash
+npm run clean
+npm run release
+```
+
+If GitHub `winblockcc/winblock-tools` returns **404**, `ensure:tools` falls back to `fetch:local`:
+
+- Copies from `C:\Program Files\Future Academy\tools` if installed, or legacy ProgramData path, or
+- Set `WINDY_TOOLS_SOURCE` / `TOOLS_7Z_PATH` before `npm run release`
 
 Produces in `dist/`:
 
 - `FutureAcademy-2.0.2-x64-setup.exe` — Inno Setup installer (GUI + tools.7z)
-- `FutureAcademy-2.0.2-x64-app.zip` — portable Electron app (after `release:app-zip`)
+- `FutureAcademy-2.0.2-x64-app.zip` — portable bundle: GUI + `tools/` + `firmwares/` (unzip and run `WindyLink.exe`)
 
-Zip only (GUI already built): `npm run release:app-zip`
+Zip only (requires `tools/` + GUI build): `npm run ensure:tools && npm run build:gui:win && npm run release:app-zip`
 
 Publish to update server (from `scratch-link-server` repo): `npm run seed:releases`
 
@@ -47,14 +62,16 @@ The app starts the link server (port `11337`) and opens the editor URL.
 ### Paths
 
 - App: `C:\Program Files\Future Academy\`
-- Tools: `C:\ProgramData\Windify\Future Academy\tools\`
+- Tools: `C:\Program Files\Future Academy\tools\` (beside `WindyLink.exe`)
 - User data: `%LOCALAPPDATA%\WindyLink\`
 
 ### Troubleshooting
 
-- **Extracting tools failed:** rerun installer and whitelist `dist`/installer in antivirus.
-- **Upload/flash failed:** verify `arduino-cli.exe` exists under ProgramData tools, then reinstall.
-- **Missing VL53L0X / Windify:** from repo run `npm run verify:libs`; copy `tools/Arduino/libraries` to ProgramData or rebuild `tools.7z`.
+- **Windows 11 blocks installer / tools not extracted:** unsigned build + SmartScreen / Defender. See [docs/installer-windows.md](docs/installer-windows.md) — **Unblock** the exe, **More info → Run anyway**, allow in antivirus, rerun as admin.
+- **Downloaded from update server over HTTP:** right-click installer → Properties → **Unblock**, then install.
+- **Extracting tools failed:** installer now shows a 7-Zip error dialog; whitelist Inno `%TEMP%` and the install folder, then reinstall.
+- **Upload/flash failed:** verify `arduino-cli.exe` exists under `{app}\tools`, then reinstall.
+- **Missing VL53L0X / Windify:** from repo run `npm run verify:libs`; copy `tools/Arduino/libraries` into the app `tools` folder or rebuild `tools.7z`.
 - **Browser not opened:** open [https://stem.windify.edu.vn/](https://stem.windify.edu.vn/) manually.
 - **Port in use:** close other Future Academy instances (tray/Task Manager).
 

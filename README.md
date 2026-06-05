@@ -88,7 +88,7 @@ cd "dist\staging\Future Academy"
 
 If tools are missing beside the exe, upload will fail instead of crashing the server.
 
-After setup install, build tools are stored in `%ProgramData%\Windify\Future Academy\tools` and user data (build cache) is stored in `%LOCALAPPDATA%\WindyLink`.
+After setup install, build tools are stored in `C:\Program Files\Future Academy\tools\` (beside `WindyLink.exe`) and user data (build cache) is stored in `%LOCALAPPDATA%\WindyLink`.
 
 ### Build Windows Setup EXE installer
 
@@ -128,7 +128,7 @@ Install flow:
 
 1. Double-click the setup EXE
 2. App files install to `C:\Program Files\Future Academy\`
-3. Setup extracts build tools from `tools.7z` to `C:\ProgramData\Windify\Future Academy\tools\` (wait for the progress step; may take a few minutes)
+3. Setup extracts build tools from `tools.7z` into `{app}\tools\` (same folder as `WindyLink.exe`; wait for the progress step; may take a few minutes)
 4. (CLI installer only) Node.js LTS is installed silently if it is missing or older than v18
 5. Start **Future Academy** from the Start Menu — GUI window + system tray
 6. Browser opens https://stem.windify.edu.vn/
