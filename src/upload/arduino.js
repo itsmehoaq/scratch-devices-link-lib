@@ -63,6 +63,11 @@ class Arduino {
         this.initArduinoCli();
     }
 
+    /** Serial path used for the last upload (may change after ESP32 USB re-enumeration). */
+    getPeripheralPath () {
+        return this._peripheralPath;
+    }
+
     /**
      * Ordered unique extension library paths for compiler search (--libraries).
      * libraryOrder entries win; then config.library; duplicates removed.
@@ -1084,8 +1089,12 @@ class Arduino {
                 clearInterval(listenAbortSignal);
                 const wait = ms => new Promise(relv => setTimeout(relv, ms));
                 if (code === 0) {
-                    if (this._config.postUploadDelay) {
-                        wait(this._config.postUploadDelay).then(() => resolve('Success'));
+                    const postDelay = this._config.postUploadDelay ||
+                        (this._isEsp32Target() ?
+                            (os.platform() === 'win32' ? 2000 : 1000) :
+                            0);
+                    if (postDelay > 0) {
+                        wait(postDelay).then(() => resolve('Success'));
                     } else {
                         resolve('Success');
                     }
