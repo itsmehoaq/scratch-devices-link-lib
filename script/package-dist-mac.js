@@ -7,6 +7,15 @@ const repoRoot = path.resolve(__dirname, '..');
 const pkg = require('../package.json');
 const exeName = 'WindyLink';
 const exePath = path.join(repoRoot, 'dist', exeName);
+const trayExeName = 'FutureAcademyTray';
+const trayExePath = path.join(
+    repoRoot,
+    'shell',
+    'target',
+    'aarch64-apple-darwin',
+    'release',
+    trayExeName
+);
 const toolsRoot = path.join(repoRoot, 'tools-mac');
 const firmwaresRoot = path.join(repoRoot, 'firmwares');
 const stagingRoot = path.join(repoRoot, 'dist', 'staging-mac', 'Future Academy');
@@ -99,6 +108,12 @@ if (!fs.existsSync(exePath)) {
     process.exit(1);
 }
 
+if (!fs.existsSync(trayExePath)) {
+    console.error(`Missing tray binary: ${trayExePath}`);
+    console.error('Run npm run build:shell:mac:arm64 first.');
+    process.exit(1);
+}
+
 if (!fs.existsSync(firmwaresRoot)) {
     console.error(`Missing firmwares directory: ${firmwaresRoot}`);
     console.error('Run npm run fetch (or npm run fetch:mac:from-win) first.');
@@ -114,6 +129,8 @@ if (!fs.existsSync(arduinoCliPath)) {
 prepareStagingRoot();
 fs.copyFileSync(exePath, path.join(stagingRoot, exeName));
 fs.chmodSync(path.join(stagingRoot, exeName), 0o755);
+fs.copyFileSync(trayExePath, path.join(stagingRoot, trayExeName));
+fs.chmodSync(path.join(stagingRoot, trayExeName), 0o755);
 copyDir(toolsRoot, path.join(stagingRoot, 'tools'));
 copyDir(firmwaresRoot, path.join(stagingRoot, 'firmwares'));
 fs.writeFileSync(

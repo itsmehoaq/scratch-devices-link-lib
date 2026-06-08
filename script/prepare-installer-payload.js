@@ -15,6 +15,14 @@ const pkg = require('../package.json');
 const useGui = process.argv.includes('--gui');
 const payloadRoot = path.join(repoRoot, 'dist', 'installer-payload');
 const cliExePath = path.join(repoRoot, 'dist', 'WindyLink.exe');
+const trayExePath = path.join(
+    repoRoot,
+    'shell',
+    'target',
+    'x86_64-pc-windows-msvc',
+    'release',
+    'FutureAcademyTray.exe'
+);
 
 /** Resolve GUI paths at runtime (pointer may be stale between steps). */
 const resolveGuiPaths = () => {
@@ -214,6 +222,12 @@ const main = async () => {
         fs.copyFileSync(cachedNodeMsi, payloadNodeMsi);
 
         fs.copyFileSync(exePath, path.join(payloadRoot, 'WindyLink.exe'));
+        if (!fs.existsSync(trayExePath)) {
+            console.error(`Missing tray exe: ${trayExePath}`);
+            console.error('Run npm run build:shell:win first.');
+            process.exit(1);
+        }
+        fs.copyFileSync(trayExePath, path.join(payloadRoot, 'FutureAcademyTray.exe'));
         copyDir(firmwaresRoot, path.join(payloadRoot, 'firmwares'));
         fs.writeFileSync(
             path.join(payloadRoot, 'build-type.txt'),

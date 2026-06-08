@@ -25,7 +25,7 @@ SetupIconFile=..\assets\FutureAcademy.ico
 #ifdef GuiBuild
 UninstallDisplayIcon={app}\FutureAcademy.ico
 #else
-UninstallDisplayIcon={app}\WindyLink.exe
+UninstallDisplayIcon={app}\FutureAcademyTray.exe
 #endif
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -46,6 +46,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "..\dist\installer-payload\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 #else
 Source: "..\dist\installer-payload\WindyLink.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\installer-payload\FutureAcademyTray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\installer-payload\7za.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\installer-payload\firmwares\*"; DestDir: "{app}\firmwares"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
@@ -60,8 +61,8 @@ Source: "..\dist\installer-payload\node-v18.20.8-x64.msi"; DestDir: "{tmp}"; Des
 Name: "{group}\{#AppName}"; Filename: "{app}\WindyLink.exe"; IconFilename: "{app}\FutureAcademy.ico"; Comment: "Start Future Academy local hardware server"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\WindyLink.exe"; IconFilename: "{app}\FutureAcademy.ico"; Tasks: desktopicon
 #else
-Name: "{group}\{#AppName}"; Filename: "{app}\WindyLink.exe"; Comment: "Start Future Academy local hardware server"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\WindyLink.exe"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\FutureAcademyTray.exe"; Comment: "Start Future Academy local hardware server"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\FutureAcademyTray.exe"; Tasks: desktopicon
 #endif
 
 [Registry]
