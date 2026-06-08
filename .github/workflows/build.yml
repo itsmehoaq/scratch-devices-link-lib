@@ -40,11 +40,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
@@ -58,13 +53,6 @@ jobs:
             shell/target
           key: rust-${{ matrix.rust_target }}-${{ hashFiles('shell/Cargo.lock') }}
           restore-keys: rust-${{ matrix.rust_target }}-
-
-      - name: Install Node dependencies
-        run: npm ci
-
-      - name: Generate .icns
-        if: runner.os == 'macOS'
-        run: node script/generate-icns.js
 
       - name: Build Rust tray shell
         run: cargo build --release --manifest-path shell/Cargo.toml --target ${{ matrix.rust_target }}
