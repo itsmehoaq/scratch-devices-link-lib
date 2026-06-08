@@ -1,203 +1,109 @@
-# Future Academy — Windify Block Link Server
+# Future Academy Link
 
-Local hardware link server for [Future Academy / Windblock 3.0 GUI](https://stem.windify.edu.vn/).
+Local hardware link server for [Future Academy](https://stem.windify.edu.vn/).
 
-### Instructions
+Single Rust binary — no Node.js or Electron at runtime. Downloads arduino-cli and ESP32 toolchain on first launch.
+
+---
+
+## Install
+
+Download the latest release for your platform from the [Releases](../../releases) page:
+
+| File | Platform |
+|------|----------|
+| `FutureAcademy-arm64.zip` | macOS Apple Silicon |
+| `FutureAcademy-intel.zip` | macOS Intel |
+| `FutureAcademy-win.zip` | Windows x64 |
+
+**macOS:** unzip, right-click → Open (first time only — app is ad-hoc signed, not notarized). Or remove quarantine:
 ```bash
-# Run from the repo root
-npm install
-npm run fetch
-npm start
+xattr -cr FutureAcademy.app
 ```
 
-### Desktop GUI (Figma device panel)
+**Windows:** unzip, run `FutureAcademyTray.exe`.
 
-```bash
-npm install
-npm run start:gui
-```
+On first run, arduino-cli and the ESP32/AVR toolchain are downloaded to:
+- macOS: `~/Library/Application Support/WindyLink/tools/`
+- Windows: `%LOCALAPPDATA%\FutureAcademy\tools\`
 
-Shows a Future Academy tray window with USB serial device list, **Website**, **Console**, and **Refresh**. See [docs/gui.md](docs/gui.md).
+---
 
-Listen host: default `0.0.0.0` (all interfaces). Loopback-only: `set WINDY_LINK_LISTEN_HOST=127.0.0.1` then `npm start`. The address `0.0.0.1` is not valid for TCP bind.
+## Build locally
 
-When launched as `WindyLink.exe`, the app opens **https://stem.windify.edu.vn/** in the default browser after the link server is ready.
-
-Optional env vars:
-
-- `WINDY_STARTUP_URL` — override startup browser URL
-- `WINDY_OPEN_STARTUP_URL=0` — disable opening the browser on start
-
-### Build macOS ARM64 portable release from Windows
-
-Cross-builds the CLI binary with `pkg` (no V8 bytecode), stages macOS build tools and firmwares, and writes a zip. **Electron GUI / `.app` installers still require building on macOS** (`npm run build:gui:mac:arm64`).
-
-Prerequisites (once per machine, or when tools/firmwares change):
-
-```powershell
-npm install
-npm run fetch:mac:from-win
-```
-
-Build the release:
-
-```powershell
-npm run release:mac:arm64:from-win
-```
-
-Output:
-
-```
-dist/FutureAcademy-<version>-macos-arm64-portable.zip
-dist/staging-mac/Future Academy/
-├── WindyLink
-├── tools/
-├── firmwares/
-└── README-mac-portable.txt
-```
-
-On a Mac before end users run it, ad-hoc sign the binary:
+Prerequisites: Rust (via rustup), Node.js (for packaging scripts only).
 
 ```bash
-codesign --sign - ./WindyLink
+# macOS Apple Silicon
+npm run build:app:mac:arm64     # → dist/FutureAcademy.app
+
+# macOS Intel
+npm run build:app:mac:x64       # → dist/FutureAcademy-intel.app
+
+# Windows (cross-compile from macOS/Linux needs mingw, or build on Windows)
+npm run build:win:dist          # → dist/FutureAcademy-win/
 ```
 
-### Build Windows terminal exe
-
-```powershell
-npm install
-npm run fetch
-npm run release:win
+Cross-compile targets require rustup:
+```bash
+rustup target add aarch64-apple-darwin
+rustup target add x86_64-apple-darwin
+rustup target add x86_64-pc-windows-gnu
 ```
 
-Output staging folder (portable run):
+---
 
-```
-dist/staging/Future Academy/
-├── WindyLink.exe
-├── tools/
-└── firmwares/
-```
+## How it works
 
-Run from that folder so build/upload tools resolve correctly:
+- `FutureAcademyTray` starts a tray icon and an embedded HTTP/WebSocket server on `http://127.0.0.1:11337`
+- Serial devices appear in the tray menu in real time
+- Tray shows setup progress while tools download on first run
+- Log file: `~/Library/Logs/FutureAcademy/link.log` (macOS) / `%LOCALAPPDATA%\FutureAcademy\link.log` (Windows)
+- Click **Show Console Log** in the tray to open the log
 
-```powershell
-cd "dist\staging\Future Academy"
-.\WindyLink.exe
-```
+---
 
-If tools are missing beside the exe, upload will fail instead of crashing the server.
+## JSON-RPC API (WebSocket)
 
-After setup install, build tools are stored in `C:\Program Files\Future Academy\tools\` (beside `WindyLink.exe`) and user data (build cache) is stored in `%LOCALAPPDATA%\WindyLink`.
+Connect to `ws://127.0.0.1:11337/`. All messages are JSON-RPC 2.0.
 
-### Build Windows Setup EXE installer
-
-Prerequisite on the build machine:
-
-```powershell
-winget install JRSoftware.InnoSetup
+### `connect`
+```jsonc
+{ "jsonrpc": "2.0", "id": 1, "method": "connect", "params": { "port": "/dev/cu.usbmodem123", "baudRate": 115200 } }
 ```
 
-Build the **desktop GUI** setup installer (Electron tray app + device panel):
-
-```powershell
-npm install
-npm run fetch
-npm run release:setup
+### `upload` (Arduino AVR)
+```jsonc
+{ "jsonrpc": "2.0", "id": 2, "method": "upload", "params": { "port": "/dev/cu.usbmodem123", "board": "uno", "hex": "<base64>" } }
 ```
 
-This runs `build:gui:win` (Electron), then Inno Setup. The installed app is `WindyLink.exe` with the Future Academy window and system tray — no separate Node.js install required.
-
-Headless CLI installer (single `pkg` exe + optional Node.js MSI):
-
-```powershell
-npm run release:setup:cli
-```
-
-Note: do not run `script/apply-exe-icon.js` on pkg-built `WindyLink.exe` — it corrupts the binary. Icons come from `assets/FutureAcademy.ico` via `npm run gui:logo` and Inno Setup.
-
-Output:
-
-```
-dist/FutureAcademy-<version>-x64-setup.exe
-```
-
-(`<version>` matches `package.json`, e.g. `2.0.1`.)
-
-Install flow:
-
-1. Double-click the setup EXE
-2. App files install to `C:\Program Files\Future Academy\`
-3. Setup extracts build tools from `tools.7z` into `{app}\tools\` (same folder as `WindyLink.exe`; wait for the progress step; may take a few minutes)
-4. (CLI installer only) Node.js LTS is installed silently if it is missing or older than v18
-5. Start **Future Academy** from the Start Menu — GUI window + system tray
-6. Browser opens https://stem.windify.edu.vn/
-7. Uninstall via Windows Settings → Apps (optional cleanup: delete `%LOCALAPPDATA%\WindyLink`)
-
-Release notes: [release.md](release.md)
-
-If `release:setup` fails because `dist\` is locked:
-
-```powershell
-npm run clean:dist
-npm run release:setup
-```
-
-### ESP32 binary flashing & device scan
-
-The link server can flash a triple of pre-compiled ESP32 bins
-(`bootloader.bin`, `partitions.bin`, `firmware.bin`) over an existing
-serial session by wrapping the `esptool` binary that `npm run fetch`
-extracts under `tools/Arduino/packages/esp32/tools/esptool_py/<ver>/`.
-After flashing, the same session can issue a `scan` command and stream
-the firmware's JSON device list back to the client.
-
-See [`docs/esp32-bin-flash.md`](docs/esp32-bin-flash.md) for the full
-design notes and the GUI flow it mirrors.
-
-#### `uploadEsp32Bin` (JSON-RPC)
-
-Pre-condition: the session is already `connect`ed to the target serial
-port (same flow as the existing AVR `upload`).
-
+### `uploadEsp32Bin`
 ```jsonc
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "uploadEsp32Bin",
+  "jsonrpc": "2.0", "id": 3, "method": "uploadEsp32Bin",
   "params": {
-    "chip": "esp32s3",
-    "baudrate": 921600,
-    "eraseAll": false,
-    "flashMode": "dio",
-    "flashFreq": "80m",
-    "flashSize": "keep",
+    "chip": "esp32s3", "baudrate": 921600,
     "addresses": { "bootloader": 0, "partitions": 32768, "firmware": 65536 },
     "bins": {
       "bootloader": { "encoding": "base64", "data": "<...>" },
-      "partitions": { "encoding": "base64", "data": "<...>" },
-      "firmware":   { "path": "C:/abs/path/firmware.bin" }
+      "partitions":  { "encoding": "base64", "data": "<...>" },
+      "firmware":    { "encoding": "base64", "data": "<...>" }
     }
   }
 }
 ```
 
-Each `bins.*` entry accepts either an inline `{encoding, data}` payload
-or a local `{path}` already on disk. Progress is streamed back via the
-existing `uploadStdout` notifications (with optional `progress` 0..1
-values). The flow ends with an `uploadSuccess` notification.
+Progress streams via `uploadStdout` notifications. Ends with `uploadSuccess`.
 
-#### `scanDevices` (JSON-RPC)
-
+### `scanDevices`
 ```jsonc
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "scanDevices",
-  "params": { "command": "scan", "terminator": "\n", "timeoutMs": 10000 }
-}
+{ "jsonrpc": "2.0", "id": 4, "method": "scanDevices", "params": { "command": "scan", "terminator": "\n", "timeoutMs": 10000 } }
 ```
 
-Returns `{ devices: [...], raw: <full JSON> }` once the firmware emits
-a balanced JSON object containing a `devices` array. Rejects with
-`scan timeout` after `timeoutMs`.
+Returns `{ devices: [...], raw: "..." }`.
+
+---
+
+## CI / Releases
+
+Pushing to `main` or `macos-optimize` triggers a build for all 3 platforms and auto-publishes a GitHub release tagged `v{version}` (from `package.json`). Zips are created on the native runner (`ditto` for macOS, `Compress-Archive` for Windows) to preserve permissions.

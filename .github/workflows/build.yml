@@ -23,14 +23,14 @@ jobs:
             rust_target: aarch64-apple-darwin
             pkg_script: node script/package-app-mac.js --arch arm64
             artifact_name: FutureAcademy-arm64
-            zip_cmd: ditto -c -k --sequester-rsrc --keepParent dist/FutureAcademy.app dist/FutureAcademy-arm64.zip
+            zip_cmd: ditto -c -k --sequesterRsrc --keepParent dist/FutureAcademy.app dist/FutureAcademy-arm64.zip
 
           - label: macOS Intel
             os: macos-latest
             rust_target: x86_64-apple-darwin
             pkg_script: node script/package-app-mac.js --arch x64
             artifact_name: FutureAcademy-intel
-            zip_cmd: ditto -c -k --sequester-rsrc --keepParent dist/FutureAcademy-intel.app dist/FutureAcademy-intel.zip
+            zip_cmd: ditto -c -k --sequesterRsrc --keepParent dist/FutureAcademy-intel.app dist/FutureAcademy-intel.zip
 
           - label: Windows x64
             os: windows-latest
