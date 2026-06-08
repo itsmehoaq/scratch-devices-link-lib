@@ -10,9 +10,15 @@ const {spawnSync} = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const {
+    stageRuntimeAssets,
+    stageFirmwares
+} = require('./lib/stage-runtime-assets');
 
 const repoRoot = path.resolve(__dirname, '..');
 const defaultElectronOutput = path.join(repoRoot, 'dist', 'electron');
+const sourceToolsRoot = path.join(repoRoot, 'tools');
+const sourceFirmwaresRoot = path.join(repoRoot, 'firmwares');
 
 const args = process.argv.slice(2);
 const archFlag = (() => {
@@ -78,25 +84,51 @@ if (os.platform() !== 'darwin') {
 console.info('[build-gui-darwin] preparing GUI assets…');
 runNpm(['run', 'gui:assets']);
 
+console.info('[build-gui-darwin] preparing Arduino tools…');
+runNpm(['run', 'setup:arduino']);
+runNpm(['run', 'sync:windify-lib']);
+
 const electronOutput = defaultElectronOutput;
 fs.mkdirSync(electronOutput, {recursive: true});
 
 const unpackedDir = archFlag === 'arm64'
     ? path.join(electronOutput, 'mac-arm64-unpacked')
     : path.join(electronOutput, 'mac-unpacked');
-const appPath = path.join(unpackedDir, 'WindyLink.app');
+const outputDirs = [
+    unpackedDir,
+    archFlag === 'arm64'
+        ? path.join(electronOutput, 'mac-arm64')
+        : path.join(electronOutput, 'mac')
+];
+
+const findAppPath = () => {
+    for (const dir of outputDirs) {
+        for (const appName of ['WindyLink.app', 'Future Academy.app']) {
+            const appPath = path.join(dir, appName);
+            if (fs.existsSync(appPath)) {
+                return appPath;
+            }
+        }
+    }
+    return null;
+};
 
 console.info(`[build-gui-darwin] packaging Electron app (${archFlag})…`);
 runElectronBuilder(electronOutput);
 
-if (!fs.existsSync(appPath)) {
-    // electron-builder may name the .app after productName
-    const altAppPath = path.join(unpackedDir, 'Future Academy.app');
-    if (!fs.existsSync(altAppPath)) {
-        console.error(`[build-gui-darwin] missing ${appPath}`);
-        process.exit(1);
-    }
-    console.info(`[build-gui-darwin] ready: ${altAppPath}`);
-} else {
-    console.info(`[build-gui-darwin] ready: ${appPath}`);
+const appPath = findAppPath();
+if (!appPath) {
+    console.error(`[build-gui-darwin] missing app in ${outputDirs.join(' or ')}`);
+    process.exit(1);
 }
+
+const macOsDir = path.join(appPath, 'Contents', 'MacOS');
+console.info('[build-gui-darwin] staging bundled Arduino tools…');
+const toolsResult = stageRuntimeAssets(sourceToolsRoot, path.join(macOsDir, 'tools'));
+console.info(`[build-gui-darwin] staged ${toolsResult.copied.length} Arduino paths`);
+
+if (stageFirmwares(sourceFirmwaresRoot, path.join(macOsDir, 'firmwares'))) {
+    console.info('[build-gui-darwin] staged firmwares');
+}
+
+console.info(`[build-gui-darwin] ready: ${appPath}`);

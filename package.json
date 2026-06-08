@@ -20,6 +20,7 @@
     "fetch:small": "npm run fetch && npm run tools:prune && npm run tools:archive",
     "fetch:local": "node script/fetch-local.js",
     "setup:arduino": "node script/setup-arduino.js",
+    "sync:windify-lib": "node script/sync-windify-lib.js",
     "ensure:tools": "node script/ensure-tools.js",
     "build:release": "npm run setup:arduino && npm run tools:prune -- --apply && npm run tools:archive -- --overwrite",
     "start": "rimraf ../.winblockData/link && node test/start-server.js --log-level=info",

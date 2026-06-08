@@ -400,9 +400,14 @@ class Arduino {
                 throw buf.error;
             }
 
-            const stdout = yaml.load(buf.stdout.toString());
+            const stdout = yaml.load(buf.stdout.toString()) || {};
+            const directories = stdout.directories || {};
 
-            if (stdout.directories.data !== this._arduinoPath) {
+            if (
+                directories.data !== this._arduinoPath ||
+                directories.downloads !== path.join(this._arduinoPath, 'staging') ||
+                directories.user !== this._arduinoPath
+            ) {
                 this._sendstd(`${ansi.yellow_dark}arduino cli config has not been initialized yet.\n`);
                 this._sendstd(`${ansi.green_dark}set the path to ${this._arduinoPath}.\n`);
                 spawnSync(this._arduinoCliPath, ['config', 'set', 'directories.data', this._arduinoPath,
@@ -461,6 +466,25 @@ class Arduino {
             /FlashSize=16M/i.test(this._config.fqbn);
     }
 
+    _withFqbnOption (fqbn, key, value) {
+        if (typeof fqbn !== 'string' || !fqbn) return fqbn;
+        const option = `${key}=${value}`;
+        const keyRe = new RegExp(`${key}=[^,:]+`, 'i');
+        if (keyRe.test(fqbn)) {
+            return fqbn.replace(keyRe, option);
+        }
+        return fqbn.includes(':') && fqbn.split(':').length >= 4 ?
+            `${fqbn},${option}` :
+            `${fqbn}:${option}`;
+    }
+
+    _build16MCustomFqbn () {
+        let fqbn = this._config.fqbn;
+        fqbn = this._withFqbnOption(fqbn, 'FlashSize', '16M');
+        fqbn = this._withFqbnOption(fqbn, 'PartitionScheme', 'custom');
+        return fqbn;
+    }
+
     /**
      * Why: generic "default" partition on 16M boards still caps APP at ~1.3 MB.
      * Use a 16M table (or a Windify ~14 MB APP table when PCM is embedded).
@@ -470,18 +494,20 @@ class Arduino {
     _buildCompileFqbn (hasWindifyAudio) {
         const fqbn = this._config.fqbn;
         if (
-            !hasWindifyAudio ||
             !this._isEsp32Target() ||
-            !this._fqbnHas16MFlash()
+            (!hasWindifyAudio && !this._fqbnHas16MFlash())
         ) {
             return fqbn;
         }
-        return fqbn.replace(/PartitionScheme=[^,]+/, 'PartitionScheme=custom');
+        if (hasWindifyAudio) {
+            return this._build16MCustomFqbn();
+        }
+        return this._withFqbnOption(fqbn, 'PartitionScheme', 'custom');
     }
 
     _writeEsp32PartitionTable (hasWindifyAudio) {
         const partitionPath = path.join(this._codeFolderPath, 'partitions.csv');
-        if (!this._isEsp32Target() || !this._fqbnHas16MFlash()) {
+        if (!this._isEsp32Target() || (!hasWindifyAudio && !this._fqbnHas16MFlash())) {
             if (fs.existsSync(partitionPath)) {
                 fs.unlinkSync(partitionPath);
             }
@@ -501,7 +527,7 @@ class Arduino {
     }
 
     _appendEsp32FlashBuildProperties (args, sketchIdx, hasWindifyAudio) {
-        if (!this._isEsp32Target() || !this._fqbnHas16MFlash()) {
+        if (!this._isEsp32Target() || (!hasWindifyAudio && !this._fqbnHas16MFlash())) {
             return;
         }
         if (hasWindifyAudio) {
