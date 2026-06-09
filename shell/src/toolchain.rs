@@ -22,15 +22,18 @@ pub const ARDUINO_INDEX_URL: &str =
     "https://downloads.arduino.cc/packages/package_index.json";
 pub const ARDUINO_CLI_VERSION: &str = "1.4.1";
 
-/// ESP32 tools that are never needed for the boards we support; skipped during
-/// the selective install so they are never downloaded.
+/// ESP32 tools that are never needed for the boards we support (ESP32-S3 only);
+/// skipped during the selective install so they are never downloaded.
 const SKIP_TOOLS: &[&str] = &[
+    // RISC-V chips (C3 / C6 / H2 / P4) — not supported
     "esp-rv32",
     "riscv32-esp-elf-gcc",
     "riscv32-esp-elf-gdb",
+    // Old per-chip Xtensa compilers superseded by the unified xtensa-esp-elf-gcc
+    // in core 3.x. Classic ESP32 and S2 not supported.
     "xtensa-esp32-elf-gcc",
     "xtensa-esp32s2-elf-gcc",
-    "xtensa-esp32s3-elf-gcc",
+    // Debug / JTAG tools — not needed at runtime
     "openocd-esp32",
     "xtensa-esp-elf-gdb",
 ];
@@ -722,21 +725,51 @@ async fn setup_inner(
     // ── Selective Arduino AVR (Uno) install ──────────────────────────────────
     install_arduino_avr(arduino_dir, tmp_dir, report).await?;
 
-    // Safety-net prune: keep only the esp32s3 per-chip subdir inside
-    // esp32-arduino-libs (the skipped tools are never downloaded now).
+    // Prune non-S3 content so only ESP32-S3 chip data is kept on disk.
     phase("pruning", 0);
-    let packages = arduino_dir.join("packages").join("esp32").join("tools");
-    let libs_root = packages.join("esp32-arduino-libs");
+
+    // 1. esp32-arduino-libs: each version subdir contains one folder per chip.
+    //    Keep only esp32s3, remove all others.
+    let non_s3_chips = ["esp32", "esp32s2", "esp32c3", "esp32c6", "esp32h2", "esp32p4"];
+    let libs_root = arduino_dir
+        .join("packages").join("esp32").join("tools")
+        .join("esp32-arduino-libs");
     if libs_root.exists() {
-        let remove_chips = ["esp32", "esp32c3", "esp32c6", "esp32h2", "esp32p4", "esp32s2"];
         if let Ok(versions) = fs::read_dir(&libs_root) {
             for ver in versions.flatten() {
                 let ver_path = ver.path();
                 if ver_path.is_dir() {
-                    for chip in &remove_chips {
+                    for chip in &non_s3_chips {
                         let cp = ver_path.join(chip);
                         if cp.exists() {
+                            tracing::info!("[link] pruning libs chip dir: {}", cp.display());
                             let _ = fs::remove_dir_all(&cp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. hardware variants: remove any variant folder whose name does not
+    //    contain "s3" — those belong to other chips (S2, C3, C6, H2, P4,
+    //    classic ESP32).
+    let hw_root = arduino_dir
+        .join("packages").join("esp32").join("hardware").join("esp32");
+    if hw_root.exists() {
+        if let Ok(versions) = fs::read_dir(&hw_root) {
+            for ver in versions.flatten() {
+                let variants_dir = ver.path().join("variants");
+                if !variants_dir.is_dir() {
+                    continue;
+                }
+                if let Ok(entries) = fs::read_dir(&variants_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name_str = name.to_string_lossy().to_lowercase();
+                        if entry.path().is_dir() && !name_str.contains("s3") {
+                            tracing::info!("[link] pruning variant: {}", entry.path().display());
+                            let _ = fs::remove_dir_all(entry.path());
                         }
                     }
                 }
