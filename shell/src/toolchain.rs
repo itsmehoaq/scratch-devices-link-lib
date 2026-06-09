@@ -31,6 +31,7 @@ const ESP32_KEEP_TOOLS: &[&str] = &[
     "mklittlefs",
     "mkspiffs",
     "esp32-arduino-libs",
+    "esp32s3-libs",
 ];
 
 /// Arduino AVR tools we keep (everything else in the AVR core is skipped).
