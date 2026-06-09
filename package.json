@@ -1,6 +1,6 @@
 {
   "name": "windify-block",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Future Academy local hardware link server for https://stem.windify.edu.vn/",
   "main": "src/index.js",
   "bin": {

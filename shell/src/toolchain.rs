@@ -22,20 +22,15 @@ pub const ARDUINO_INDEX_URL: &str =
     "https://downloads.arduino.cc/packages/package_index.json";
 pub const ARDUINO_CLI_VERSION: &str = "1.4.1";
 
-/// ESP32 tools that are never needed for the boards we support (ESP32-S3 only);
-/// skipped during the selective install so they are never downloaded.
-const SKIP_TOOLS: &[&str] = &[
-    // RISC-V chips (C3 / C6 / H2 / P4) — not supported
-    "esp-rv32",
-    "riscv32-esp-elf-gcc",
-    "riscv32-esp-elf-gdb",
-    // Old per-chip Xtensa compilers superseded by the unified xtensa-esp-elf-gcc
-    // in core 3.x. Classic ESP32 and S2 not supported.
-    "xtensa-esp32-elf-gcc",
-    "xtensa-esp32s2-elf-gcc",
-    // Debug / JTAG tools — not needed at runtime
-    "openocd-esp32",
-    "xtensa-esp-elf-gdb",
+/// Only these ESP32 tools are downloaded. Everything else in toolsDependencies
+/// is skipped (compilers, debuggers, RISC-V tools). We flash pre-compiled .bin
+/// files via esptool so no compiler is needed.
+const ESP32_KEEP_TOOLS: &[&str] = &[
+    "esptool_py",
+    "esptool",
+    "mklittlefs",
+    "mkspiffs",
+    "esp32-arduino-libs",
 ];
 
 /// Arduino AVR tools we keep (everything else in the AVR core is skipped).
@@ -500,11 +495,11 @@ async fn install_esp32(
     )
     .await?;
 
-    // Tools (filtered by SKIP_TOOLS).
+    // Tools: whitelist — only download what we actually need.
     let deps: Vec<&ToolDep> = platform
         .tools_dependencies
         .iter()
-        .filter(|d| !SKIP_TOOLS.contains(&d.name.as_str()))
+        .filter(|d| ESP32_KEEP_TOOLS.contains(&d.name.as_str()))
         .collect();
     let total = deps.len().max(1);
     for (done, dep) in deps.iter().enumerate() {
