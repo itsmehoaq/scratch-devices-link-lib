@@ -225,24 +225,38 @@ async fn is_same_server(host: &str, port: u16) -> bool {
     }
 }
 
-/// Find and kill any process listening on `port`, skipping our own PID.
-fn kill_port_owner(port: u16) {
+/// Kill all stale WinLink/FutureAcademy processes: by port AND by known
+/// process names (covers old Node/pkg builds that may not be on the port yet).
+fn kill_stale_instances(port: u16) {
     let own_pid = std::process::id();
 
     #[cfg(unix)]
     {
-        let out = std::process::Command::new("lsof")
+        // 1. Kill whatever is listening on the port.
+        if let Ok(o) = std::process::Command::new("lsof")
             .args(["-ti", &format!("tcp:{}", port)])
-            .output();
-        if let Ok(o) = out {
-            for pid_str in String::from_utf8_lossy(&o.stdout).split_whitespace() {
-                if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                    if pid == own_pid {
-                        continue;
+            .output()
+        {
+            for s in String::from_utf8_lossy(&o.stdout).split_whitespace() {
+                if let Ok(pid) = s.trim().parse::<u32>() {
+                    if pid != own_pid {
+                        tracing::warn!("[link] killing pid {} on port {}", pid, port);
+                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
                     }
-                    tracing::warn!("[link] killing stale server on port {} (pid {})", port, pid);
-                    unsafe {
-                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+
+        // 2. Kill any other FutureAcademyTray processes (old Rust or Node/pkg builds).
+        let patterns = ["FutureAcademyTray", "WindyLink", "windy-link"];
+        for pat in &patterns {
+            if let Ok(o) = std::process::Command::new("pgrep").args(["-f", pat]).output() {
+                for s in String::from_utf8_lossy(&o.stdout).split_whitespace() {
+                    if let Ok(pid) = s.trim().parse::<u32>() {
+                        if pid != own_pid {
+                            tracing::warn!("[link] killing stale process {} (pid {})", pat, pid);
+                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+                        }
                     }
                 }
             }
@@ -251,45 +265,42 @@ fn kill_port_owner(port: u16) {
 
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("netstat").args(["-ano"]).output();
-        if let Ok(o) = out {
+        // 1. Kill by port.
+        if let Ok(o) = std::process::Command::new("netstat").args(["-ano"]).output() {
             let needle = format!(":{} ", port);
             for line in String::from_utf8_lossy(&o.stdout).lines() {
                 if line.contains(&needle) && line.to_uppercase().contains("LISTENING") {
                     if let Some(pid_str) = line.split_whitespace().last() {
                         if let Ok(pid) = pid_str.parse::<u32>() {
-                            if pid == own_pid {
-                                continue;
+                            if pid != own_pid {
+                                tracing::warn!("[link] killing pid {} on port {}", pid, port);
+                                let _ = std::process::Command::new("taskkill")
+                                    .args(["/F", "/PID", pid_str])
+                                    .output();
                             }
-                            tracing::warn!(
-                                "[link] killing stale server on port {} (pid {})",
-                                port,
-                                pid
-                            );
-                            let _ = std::process::Command::new("taskkill")
-                                .args(["/F", "/PID", pid_str])
-                                .output();
                         }
                     }
                 }
             }
         }
+
+        // 2. Kill by name.
+        for name in &["FutureAcademyTray.exe", "WindyLink.exe"] {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", name])
+                .output();
+        }
     }
 }
 
-/// Start the link server. Kills any stale WinLink process on the port first,
-/// then retries bind for up to 5 s (handles TCP TIME_WAIT after kill).
+/// Start the link server. Kills any stale WinLink/FutureAcademy processes
+/// upfront (by port + name), then retries bind for up to 5 s.
 pub async fn start(app: Arc<AppState>) -> Result<(), String> {
     let addr = format!("{}:{}", app.host, app.port);
 
-    // Kill stale instance upfront before even trying to bind.
-    if is_same_server(&app.host, app.port).await {
-        tracing::warn!(
-            "[link] stale WinLink server on port {} — force closing",
-            app.port
-        );
-        kill_port_owner(app.port);
-    }
+    // Always kill stale instances before trying to bind — covers old Node/pkg
+    // builds and previous Rust instances regardless of their health status.
+    kill_stale_instances(app.port);
 
     // Retry bind for up to 5 s — gives the OS time to release the port after
     // SIGKILL (TCP TIME_WAIT / CLOSE_WAIT may linger briefly).
