@@ -277,16 +277,27 @@ fn kill_port_owner(port: u16) {
     }
 }
 
-/// Start the link server. On EADDRINUSE by our own server, kills the stale
-/// process and retries once. Errors on any other conflict.
+/// Start the link server. Kills any stale WinLink process on the port first,
+/// then retries bind for up to 5 s (handles TCP TIME_WAIT after kill).
 pub async fn start(app: Arc<AppState>) -> Result<(), String> {
     let addr = format!("{}:{}", app.host, app.port);
-    let mut kill_attempted = false;
-    loop {
+
+    // Kill stale instance upfront before even trying to bind.
+    if is_same_server(&app.host, app.port).await {
+        tracing::warn!(
+            "[link] stale WinLink server on port {} — force closing",
+            app.port
+        );
+        kill_port_owner(app.port);
+    }
+
+    // Retry bind for up to 5 s — gives the OS time to release the port after
+    // SIGKILL (TCP TIME_WAIT / CLOSE_WAIT may linger briefly).
+    for attempt in 0..10u32 {
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
                 tracing::info!(
-                    "WinLink link server start successfully, socket listen on: http://{}",
+                    "[link] server listening on http://{}",
                     addr
                 );
                 let router = build_router(app.clone());
@@ -296,24 +307,19 @@ pub async fn start(app: Arc<AppState>) -> Result<(), String> {
                 return Ok(());
             }
             Err(e) => {
-                if is_same_server(&app.host, app.port).await {
-                    if kill_attempted {
-                        return Err(format!(
-                            "port {} still in use after kill attempt",
-                            app.port
-                        ));
-                    }
-                    tracing::warn!(
-                        "[link] stale WinLink server on port {} — force closing",
-                        app.port
-                    );
-                    kill_port_owner(app.port);
-                    kill_attempted = true;
-                    tokio::time::sleep(Duration::from_millis(800)).await;
-                    continue;
+                if attempt == 9 {
+                    return Err(format!(
+                        "port {} still in use after 5 s: {}",
+                        app.port, e
+                    ));
                 }
-                return Err(format!("error while trying to listen port {}: {}", app.port, e));
+                tracing::warn!(
+                    "[link] port {} busy, retry {}/10…",
+                    app.port, attempt + 1
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
     }
+    unreachable!()
 }
