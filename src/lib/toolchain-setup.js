@@ -47,7 +47,11 @@ const getCliDownloadUrl = function () {
  * @returns {Promise<void>} resolves when download completes.
  */
 const downloadFile = async function (url, destPath, onProgress) {
-    const resp = await axios.get(url, {responseType: 'stream', maxRedirects: 5});
+    const resp = await axios.get(url, {
+        responseType: 'stream',
+        maxRedirects: 5,
+        decompress: true
+    });
     const total = parseInt(resp.headers['content-length'] || '0', 10);
     let received = 0;
     await new Promise((resolve, reject) => {

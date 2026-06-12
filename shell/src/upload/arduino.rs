@@ -723,8 +723,6 @@ impl Arduino {
             "--verbose".into(),
             "--build-path".into(),
             self.build_path.to_string_lossy().to_string(),
-            "--build-cache-path".into(),
-            self.build_cache_path.to_string_lossy().to_string(),
             "--config-file".into(),
             self.config_file_path.to_string_lossy().to_string(),
             self.code_folder_path.to_string_lossy().to_string(),

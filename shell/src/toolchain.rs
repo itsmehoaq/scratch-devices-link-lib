@@ -8,11 +8,12 @@
 //! `flate2`+`tar` (macOS/Linux) crates.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use bzip2::read::BzDecoder;
 use futures_util::StreamExt;
 use serde::Deserialize;
 
@@ -22,9 +23,62 @@ pub const ARDUINO_INDEX_URL: &str =
     "https://downloads.arduino.cc/packages/package_index.json";
 pub const ARDUINO_CLI_VERSION: &str = "1.4.1";
 
+/// A reqwest client with explicit settings.
+/// reqwest is built with `default-features = false` (no auto gzip/brotli/deflate),
+/// so we only need to configure redirects here.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .expect("reqwest client")
+}
+
+/// Detected archive format, based on magic bytes at the start of the file.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ArchiveFormat {
+    /// Standard gzip-compressed tar (.tar.gz / .tgz).
+    TarGz,
+    /// bzip2-compressed tar (.tar.bz2).
+    TarBz2,
+    /// Zip archive (.zip).
+    Zip,
+}
+
+impl std::fmt::Display for ArchiveFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArchiveFormat::TarGz => write!(f, ".tar.gz"),
+            ArchiveFormat::TarBz2 => write!(f, ".tar.bz2"),
+            ArchiveFormat::Zip => write!(f, ".zip"),
+        }
+    }
+}
+
+/// Read the first 2 bytes of the file and identify the compression format.
+/// - `1f 8b` → gzip  (TarGz)
+/// - `42 5a` → bzip2 (TarBz2)
+/// - `50 4b` → zip   (Zip)
+/// Returns `None` if the file is too short or unreadable.
+fn detect_format(path: &Path) -> Result<ArchiveFormat, String> {
+    let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut header = [0u8; 2];
+    f.read_exact(&mut header).map_err(|e| e.to_string())?;
+    match header {
+        [0x1f, 0x8b] => Ok(ArchiveFormat::TarGz),
+        [0x42, 0x5a] => Ok(ArchiveFormat::TarBz2),
+        [0x50, 0x4b] => Ok(ArchiveFormat::Zip),
+        _ => Err(format!(
+            "unsupported or corrupt archive (magic {:02x}{:02x}): {}",
+            header[0], header[1],
+            path.display()
+        )),
+    }
+}
+
 /// Only these ESP32 tools are downloaded. Everything else in toolsDependencies
 /// is skipped (compilers, debuggers, RISC-V tools). We flash pre-compiled .bin
 /// files via esptool so no compiler is needed.
+/// xtensa-esp32s3-elf-* must be kept so arduino-cli can link ESP32-S3 projects.
 const ESP32_KEEP_TOOLS: &[&str] = &[
     "esptool_py",
     "esptool",
@@ -32,6 +86,8 @@ const ESP32_KEEP_TOOLS: &[&str] = &[
     "mkspiffs",
     "esp32-arduino-libs",
     "esp32s3-libs",
+    "xtensa-esp32s3-elf-gcc",
+    "xtensa-esp32s3-elf-g++",
 ];
 
 /// Arduino AVR tools we keep (everything else in the AVR core is skipped).
@@ -51,6 +107,10 @@ pub struct SetupProgress {
 
 /// Shared progress sink. Cloneable so it can be captured by download closures.
 pub type ProgressFn = Arc<dyn Fn(SetupProgress) + Send + Sync + 'static>;
+
+/// Simple progress callback used during extraction, separate from the main
+/// `SetupProgress` channel so extraction does not need to own or clone `ProgressFn`.
+type ExtractProgress = dyn Fn(u8) + Send + Sync + 'static;
 
 // ── Package-index JSON model ─────────────────────────────────────────────────
 // Only the fields we consume are declared; extra fields (checksum/size/…) are
@@ -99,7 +159,6 @@ struct ToolSystem {
 }
 
 /// Return the arduino-cli release archive filename for the current platform.
-/// Port of `getCliAsset`.
 pub fn get_cli_asset() -> String {
     let v = ARDUINO_CLI_VERSION;
     if cfg!(target_os = "windows") {
@@ -140,7 +199,7 @@ async fn download_file<F: FnMut(u8)>(
     dest: &Path,
     mut on_progress: F,
 ) -> Result<(), String> {
-    let resp = reqwest::get(url).await.map_err(|e| e.to_string())?;
+    let resp = http_client().get(url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("download failed: HTTP {}", resp.status()));
     }
@@ -161,24 +220,48 @@ async fn download_file<F: FnMut(u8)>(
     Ok(())
 }
 
-/// Extract a .zip or .tar.gz archive into dest_dir.
-fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    let name = archive_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
-    if name.ends_with(".zip") {
-        extract_zip(archive_path, dest_dir)
-    } else {
-        extract_tar_gz(archive_path, dest_dir)
+/// Extract a .tar.gz or .tar.bz2 archive into dest_dir, reporting per-entry progress.
+fn extract_tar_compressed(
+    archive_path: &Path,
+    dest_dir: &Path,
+    on_progress: Option<&Arc<ExtractProgress>>,
+) -> Result<(), String> {
+    let format = detect_format(archive_path)?;
+
+    let file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
+    let decompressor: Box<dyn Read> = match format {
+        ArchiveFormat::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
+        ArchiveFormat::TarBz2 => Box::new(BzDecoder::new(file)),
+        ArchiveFormat::Zip => unreachable!(),
+    };
+    let mut archive = tar::Archive::new(decompressor);
+
+    // Count entries first so we can report per-entry progress.
+    let entries: Vec<_> = archive
+        .entries()
+        .map_err(|e| e.to_string())?
+        .collect();
+    let total = entries.len();
+    for (i, entry_result) in entries.into_iter().enumerate() {
+        let mut entry = entry_result.map_err(|e| e.to_string())?;
+        entry.unpack(dest_dir).map_err(|e| e.to_string())?;
+        if let Some(cb) = on_progress {
+            let pct = (((i + 1) as f64 / total as f64) * 100.0).round() as u8;
+            cb(pct.min(100));
+        }
     }
+    Ok(())
 }
 
-fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
+/// Extract a .zip archive into dest_dir, reporting per-entry progress.
+fn extract_zip(
+    archive_path: &Path,
+    dest_dir: &Path,
+    on_progress: Option<&Arc<ExtractProgress>>,
+) -> Result<(), String> {
     let file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let total = zip.len();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let out_path = match entry.enclosed_name() {
@@ -194,16 +277,28 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
             let mut out = fs::File::create(&out_path).map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
         }
+        if let Some(cb) = on_progress {
+            let pct = (((i + 1) as f64 / total as f64) * 100.0).round() as u8;
+            cb(pct.min(100));
+        }
     }
     Ok(())
 }
 
-fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    let file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
-    let gz = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
-    archive.unpack(dest_dir).map_err(|e| e.to_string())?;
-    Ok(())
+/// Detect archive format and extract into dest_dir using the appropriate decompressor.
+fn extract_archive(
+    archive_path: &Path,
+    dest_dir: &Path,
+    on_progress: Option<&Arc<ExtractProgress>>,
+) -> Result<(), String> {
+    fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
+    let format = detect_format(archive_path)?;
+    match format {
+        ArchiveFormat::TarGz | ArchiveFormat::TarBz2 => {
+            extract_tar_compressed(archive_path, dest_dir, on_progress)
+        }
+        ArchiveFormat::Zip => extract_zip(archive_path, dest_dir, on_progress),
+    }
 }
 
 /// Extract a .zip or .tar.gz archive into dest_dir, stripping a common leading
@@ -211,17 +306,18 @@ fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
 /// their contents in a single top-level dir (e.g. `arduino-esp32-3.1.0/…`) that
 /// must be removed so arduino-cli finds `platform.txt`/`boards.txt` at the
 /// hardware root.
-fn extract_archive_stripped(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    let name = archive_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+fn extract_archive_stripped(
+    archive_path: &Path,
+    dest_dir: &Path,
+    on_progress: Option<&Arc<ExtractProgress>>,
+) -> Result<(), String> {
     fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
-    if name.ends_with(".zip") {
-        extract_zip_stripped(archive_path, dest_dir)
-    } else {
-        extract_tar_gz_stripped(archive_path, dest_dir)
+    let format = detect_format(archive_path)?;
+    match format {
+        ArchiveFormat::TarGz | ArchiveFormat::TarBz2 => {
+            extract_tar_compressed_stripped(archive_path, dest_dir, on_progress)
+        }
+        ArchiveFormat::Zip => extract_zip_stripped(archive_path, dest_dir, on_progress),
     }
 }
 
@@ -245,7 +341,11 @@ fn first_component(p: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn extract_zip_stripped(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
+fn extract_zip_stripped(
+    archive_path: &Path,
+    dest_dir: &Path,
+    on_progress: Option<&Arc<ExtractProgress>>,
+) -> Result<(), String> {
     let file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
@@ -260,6 +360,8 @@ fn extract_zip_stripped(archive_path: &Path, dest_dir: &Path) -> Result<(), Stri
     let prefix = common_first_component(&firsts);
 
     // Pass 2: extract, stripping the common prefix when present.
+    let total = zip.len() as u64;
+    let mut extracted: u64 = 0;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let rel = match entry.enclosed_name() {
@@ -283,31 +385,51 @@ fn extract_zip_stripped(archive_path: &Path, dest_dir: &Path) -> Result<(), Stri
             let mut out = fs::File::create(&out_path).map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
         }
+        extracted += 1;
+        if let Some(cb) = on_progress {
+            let pct = ((extracted as f64 / total as f64) * 100.0).round() as u8;
+            cb(pct.min(100));
+        }
     }
     Ok(())
 }
 
-fn extract_tar_gz_stripped(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    // tar over GzDecoder is single-pass + not seekable, so open the file twice.
-    // Pass 1: collect first components.
-    let firsts: Vec<String> = {
-        let file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
-        let gz = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(gz);
-        let mut v = Vec::new();
-        for entry in archive.entries().map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path().map_err(|e| e.to_string())?;
-            v.push(first_component(&path));
-        }
-        v
+/// Extract a tar archive (gzip or bzip2) into dest_dir, stripping the common
+/// top-level directory component from all paths inside the archive.
+fn extract_tar_compressed_stripped(
+    archive_path: &Path,
+    dest_dir: &Path,
+    on_progress: Option<&Arc<ExtractProgress>>,
+) -> Result<(), String> {
+    let format = detect_format(archive_path)?;
+
+    // Pass 1: read entries to count them (tar is single-pass over decompressor).
+    let file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
+    let decompressor: Box<dyn Read> = match format {
+        ArchiveFormat::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
+        ArchiveFormat::TarBz2 => Box::new(BzDecoder::new(file)),
+        ArchiveFormat::Zip => unreachable!(),
     };
+    let mut archive = tar::Archive::new(decompressor);
+    let mut firsts: Vec<String> = Vec::new();
+    let mut entry_count: u64 = 0;
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?;
+        firsts.push(first_component(&path));
+        entry_count += 1;
+    }
     let prefix = common_first_component(&firsts);
 
-    // Pass 2: re-open and extract stripping the prefix.
+    // Pass 2: re-open and extract, stripping the prefix, reporting progress.
     let file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
-    let gz = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
+    let decompressor: Box<dyn Read> = match format {
+        ArchiveFormat::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
+        ArchiveFormat::TarBz2 => Box::new(BzDecoder::new(file)),
+        ArchiveFormat::Zip => unreachable!(),
+    };
+    let mut archive = tar::Archive::new(decompressor);
+    let mut extracted: u64 = 0;
     for entry in archive.entries().map_err(|e| e.to_string())? {
         let mut entry = entry.map_err(|e| e.to_string())?;
         let rel = entry.path().map_err(|e| e.to_string())?.into_owned();
@@ -323,6 +445,11 @@ fn extract_tar_gz_stripped(archive_path: &Path, dest_dir: &Path) -> Result<(), S
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         entry.unpack(&out_path).map_err(|e| e.to_string())?;
+        extracted += 1;
+        if let Some(cb) = on_progress {
+            let pct = ((extracted as f64 / entry_count as f64) * 100.0).round() as u8;
+            cb(pct.min(100));
+        }
     }
     Ok(())
 }
@@ -371,7 +498,10 @@ async fn fetch_and_save_index(url: &str, dest: &Path) -> Result<PackageIndex, St
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let bytes = reqwest::get(url)
+    let client = http_client();
+    let bytes = client
+        .get(url)
+        .send()
         .await
         .map_err(|e| e.to_string())?
         .error_for_status()
@@ -435,7 +565,7 @@ fn pick_system(systems: &[ToolSystem]) -> Option<ToolSystem> {
 
 /// Download one archive (the index gives a complete `url`) and extract it with
 /// prefix stripping into `dest_dir`. Reports live download progress under
-/// `phase`.
+/// `phase`, then extraction progress under `extract_phase` (typically "extracting").
 async fn download_and_extract(
     url: &str,
     archive_file_name: &str,
@@ -443,6 +573,7 @@ async fn download_and_extract(
     dest_dir: &Path,
     report: ProgressFn,
     phase: &str,
+    extract_phase: &str,
 ) -> Result<(), String> {
     let archive_path = tmp_dir.join(archive_file_name);
     let report_dl = report.clone();
@@ -454,8 +585,31 @@ async fn download_and_extract(
         });
     })
     .await?;
-    fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
-    extract_archive_stripped(&archive_path, dest_dir)?;
+
+    // Signal download done before starting extraction.
+    report(SetupProgress {
+        phase: phase_owned,
+        progress: 100,
+    });
+
+    let report_ext = report.clone();
+    let extract_phase_owned = extract_phase.to_string();
+    let on_extract_progress = Arc::new(move |pct: u8| {
+        report_ext(SetupProgress {
+            phase: extract_phase_owned.clone(),
+            progress: pct,
+        });
+    });
+
+    // Extraction is synchronous; wrap in spawn_blocking to avoid blocking the async runtime.
+    let archive_path_for_blocking = archive_path.clone();
+    let dest_dir_for_blocking = dest_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        extract_archive_stripped(&archive_path_for_blocking, &dest_dir_for_blocking, Some(&on_extract_progress))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
     let _ = fs::remove_file(&archive_path);
     Ok(())
 }
@@ -493,6 +647,7 @@ async fn install_esp32(
         &hw_dest,
         report.clone(),
         "downloading-platform",
+        "extracting",
     )
     .await?;
 
@@ -539,6 +694,7 @@ async fn install_esp32(
             &dest,
             report.clone(),
             "downloading-tools",
+            "extracting",
         )
         .await?;
         let progress = ((done + 1) * 100 / total) as u8;
@@ -578,6 +734,7 @@ async fn install_arduino_avr(
         &hw_dest,
         report.clone(),
         "downloading-platform",
+        "extracting",
     )
     .await?;
 
@@ -619,6 +776,7 @@ async fn install_arduino_avr(
             &dest,
             report.clone(),
             "downloading-tools",
+            "extracting",
         )
         .await?;
         let progress = ((done + 1) * 100 / total) as u8;
@@ -691,8 +849,22 @@ async fn setup_inner(
         phase("downloading-cli", 100);
     }
 
-    phase("extracting", 0);
-    extract_archive(&archive_path, arduino_dir)?;
+    // Extraction is synchronous; wrap in spawn_blocking so it doesn't block the async runtime.
+    let report_ext = report.clone();
+    let on_extract_progress = Arc::new(move |pct: u8| {
+        report_ext(SetupProgress {
+            phase: "extracting-cli".to_string(),
+            progress: pct,
+        });
+    });
+    let archive_path_for_blocking = archive_path.clone();
+    let arduino_dir_for_blocking = arduino_dir.to_path_buf();
+    phase("extracting-cli", 0);
+    tokio::task::spawn_blocking(move || {
+        extract_archive(&archive_path_for_blocking, &arduino_dir_for_blocking, Some(&on_extract_progress))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     #[cfg(unix)]
     {

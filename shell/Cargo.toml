@@ -38,6 +38,7 @@ ureq = { version = "2.10", features = ["json"] }
 
 # Archive extraction
 flate2 = "1"
+bzip2 = "0.4"
 tar = "0.4"
 zip = "2"
 

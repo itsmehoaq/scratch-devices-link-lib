@@ -39,10 +39,17 @@ const startLinkServer = (hooks = {}) => {
         console.info(clc.yellow('[link] arduino-cli not found — downloading toolchain in background…'));
         link.setupPhase = 'downloading-cli';
         link.setupProgress = 0;
+        let lastLoggedPhase = '';
+        let lastLoggedPct = -1;
         setupToolchain(toolsPath, ({phase, progress}) => {
             link.setupPhase = phase === 'done' ? null : phase;
             link.setupProgress = progress;
-            console.info(`[link] toolchain setup: ${phase} ${progress}%`);
+            const pct = Math.round(progress);
+            if (phase !== lastLoggedPhase || pct % 10 === 0 || pct === 100) {
+                console.info(`[link] toolchain setup: ${phase} ${pct}%`);
+                lastLoggedPhase = phase;
+                lastLoggedPct = pct;
+            }
         }).catch(err => {
             console.error(clc.red(`[link] toolchain setup failed: ${err && err.message}`));
             link.setupPhase = 'error';

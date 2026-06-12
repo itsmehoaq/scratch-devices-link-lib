@@ -195,7 +195,6 @@ fn start_runtime() {
                             let phase = if p.phase == "done" { None } else { Some(p.phase.clone()) };
                             app_for_cb.set_setup_phase(phase);
                             app_for_cb.set_setup_progress(p.progress);
-                            tracing::info!("[link] toolchain setup: {} {}%", p.phase, p.progress);
                         });
                     let res = toolchain::setup_toolchain(&tools_setup, report_fn).await;
                     if let Err(e) = res {
