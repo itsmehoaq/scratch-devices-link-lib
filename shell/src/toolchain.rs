@@ -578,9 +578,10 @@ async fn download_and_extract(
     let archive_path = tmp_dir.join(archive_file_name);
     let report_dl = report.clone();
     let phase_owned = phase.to_string();
+    let phase_for_dl = phase_owned.clone();
     download_file(url, &archive_path, move |pct| {
         report_dl(SetupProgress {
-            phase: phase_owned.clone(),
+            phase: phase_for_dl.clone(),
             progress: pct,
         });
     })
@@ -594,7 +595,7 @@ async fn download_and_extract(
 
     let report_ext = report.clone();
     let extract_phase_owned = extract_phase.to_string();
-    let on_extract_progress = Arc::new(move |pct: u8| {
+    let on_extract_progress: Arc<ExtractProgress> = Arc::new(move |pct: u8| {
         report_ext(SetupProgress {
             phase: extract_phase_owned.clone(),
             progress: pct,
@@ -851,7 +852,7 @@ async fn setup_inner(
 
     // Extraction is synchronous; wrap in spawn_blocking so it doesn't block the async runtime.
     let report_ext = report.clone();
-    let on_extract_progress = Arc::new(move |pct: u8| {
+    let on_extract_progress: Arc<ExtractProgress> = Arc::new(move |pct: u8| {
         report_ext(SetupProgress {
             phase: "extracting-cli".to_string(),
             progress: pct,

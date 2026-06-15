@@ -836,6 +836,12 @@ impl SerialportSession {
 
     /// Port of `upload`.
     async fn upload(&mut self, params: &Value) {
+        if !self.app.ready() {
+            self.session.send_notification("uploadError", Some(json!({
+                "message": format!("{}Toolchain is not ready yet — still downloading. Check /status for progress.", ansi::RED)
+            })));
+            return;
+        }
         let message = params.get("message").and_then(|v| v.as_str()).unwrap_or("");
         let encoding = params.get("encoding").and_then(|v| v.as_str()).unwrap_or("utf8");
         let config = params.get("config").cloned().unwrap_or(json!({}));

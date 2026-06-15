@@ -15,8 +15,11 @@ mod upload;
 mod usb_id;
 mod ws;
 
-use std::sync::Arc;
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 use std::thread;
+
+use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
@@ -175,7 +178,7 @@ fn start_runtime() {
 
             // Background toolchain check/setup → updates /status.
             let (ok, _cli) = toolchain::check_toolchain(&tools_path);
-            if ok {
+            if ok && paths::is_esp32_toolchain_ready(&tools_path) {
                 let layout = paths::validate_tools_layout(&tools_path);
                 if !layout.ok {
                     for m in &layout.missing {
@@ -183,21 +186,68 @@ fn start_runtime() {
                     }
                 }
             } else {
-                tracing::info!("[link] arduino-cli not found — downloading toolchain in background…");
+                tracing::info!("[link] downloading toolchain in background…");
+
+                // indicatif progress bar + a background print thread so the bar
+                // updates on a stable terminal line even when tokio yields.
+                let pb = ProgressBar::new(100);
+                pb.set_style(
+                    ProgressStyle::with_template("{spinner:.cyan} [{bar:40}] {msg:.dim} {percent:>3}%")
+                        .unwrap()
+                        .progress_chars("█▉▊▋▌▍▎▏  "),
+                );
+                pb.set_message("downloading-cli");
+                let pb = Arc::new(Mutex::new(Some(pb)));
+                let (tx, rx) = channel::<(String, u8)>();
+                let pb_for_print = pb.clone();
+                let _print_thread = thread::spawn(move || {
+                    // Drain the channel and update the bar from a single OS thread,
+                    // keeping the cursor in one place so the bar redraws cleanly.
+                    while let Ok((phase, pct)) = rx.recv() {
+                        let label = match phase.as_str() {
+                            "downloading-cli" => "Downloading CLI",
+                            "extracting" => "Extracting",
+                            "configuring" => "Configuring",
+                            "updating-index" => "Updating index",
+                            "downloading-platform" => "Downloading ESP32 core",
+                            "downloading-tools" => "Downloading toolchain",
+                            "pruning" => "Cleaning up",
+                            "done" => "Done",
+                            "error" => "Error",
+                            _ => "Setup",
+                        };
+                        if let Some(pb) = pb_for_print.lock().unwrap().as_ref() {
+                            pb.set_message(label);
+                            pb.set_position(pct as u64);
+                            if pct >= 100 {
+                                pb.finish();
+                            }
+                        }
+                    }
+                });
+
                 app.set_setup_phase(Some("downloading-cli".to_string()));
                 app.set_setup_progress(0);
                 let app_setup = app.clone();
                 let tools_setup = tools_path.clone();
+                let tx_for_setup = tx.clone();
                 tokio::spawn(async move {
                     let app_for_cb = app_setup.clone();
+                    let tx_clone = tx_for_setup.clone();
                     let report_fn: toolchain::ProgressFn =
                         Arc::new(move |p: toolchain::SetupProgress| {
-                            let phase = if p.phase == "done" { None } else { Some(p.phase.clone()) };
-                            app_for_cb.set_setup_phase(phase);
+                            app_for_cb.set_setup_phase(
+                                if p.phase == "done" { None } else { Some(p.phase.clone()) },
+                            );
                             app_for_cb.set_setup_progress(p.progress);
+                            let _ = tx_clone.send((p.phase.clone(), p.progress));
                         });
                     let res = toolchain::setup_toolchain(&tools_setup, report_fn).await;
+                    // Signal the print thread to drain then exit.
+                    let _ = tx_for_setup.send(("done".to_string(), 100));
+                    drop(tx_for_setup);
                     if let Err(e) = res {
+                        let _ = tx.send(("error".to_string(), 0));
                         tracing::error!("[link] toolchain setup failed: {}", e);
                         app_setup.set_setup_phase(Some("error".to_string()));
                     }

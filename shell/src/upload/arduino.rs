@@ -42,7 +42,6 @@ pub struct Arduino {
     code_folder_path: PathBuf,
     code_file_path: PathBuf,
     build_path: PathBuf,
-    build_cache_path: PathBuf,
     fqbn: String,
     abort: Arc<AtomicBool>,
 }
@@ -94,7 +93,6 @@ impl Arduino {
         let code_folder_path = project_file_path.join("code");
         let code_file_path = code_folder_path.join("code.ino");
         let build_path = project_file_path.join("build");
-        let build_cache_path = project_file_path.join("buildCache");
 
         let me = Self {
             peripheral_path: peripheral_path.to_string(),
@@ -106,7 +104,6 @@ impl Arduino {
             code_folder_path,
             code_file_path,
             build_path,
-            build_cache_path,
             fqbn,
             abort: Arc::new(AtomicBool::new(false)),
         };
