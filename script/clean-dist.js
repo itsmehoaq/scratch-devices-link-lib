@@ -1,5 +1,5 @@
 /**
- * Stop Windy Link and clear dist build outputs (GUI + installer payload).
+ * Stop Future Academy Link and clear dist build outputs (GUI + installer payload).
  * Use when release:setup fails with EPERM / file-in-use on Windows.
  */
 const fs = require('fs');
@@ -12,7 +12,7 @@ const {
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
 
-console.info('[clean-dist] stopping WindyLink.exe if running…');
+console.info('[clean-dist] stopping Future Academy Link if running…');
 stopRunningWindyLink();
 
 const targets = [path.join(distRoot, 'installer-payload')];

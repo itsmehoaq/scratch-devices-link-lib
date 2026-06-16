@@ -27,8 +27,8 @@ If GitHub `winblockcc/winblock-tools` returns **404**, `ensure:tools` falls back
 
 Produces in `dist/`:
 
-- `FutureAcademy-2.0.2-x64-setup.exe` — Inno Setup installer (GUI + tools.7z)
-- `FutureAcademy-2.0.2-x64-app.zip` — portable bundle: GUI + `tools/` + `firmwares/` (unzip and run `WindyLink.exe`)
+- `Future Academy Link-2.0.2-x64-setup.exe` — Inno Setup installer (GUI + tools.7z)
+- `FutureAcademy-2.0.2-x64-app.zip` — portable bundle: GUI + `tools/` + `firmwares/` (unzip and run `Future Academy Link.exe`)
 
 Zip only (requires `tools/` + GUI build): `npm run ensure:tools && npm run build:gui:win && npm run release:app-zip`
 
@@ -38,11 +38,11 @@ Publish to update server (from `scratch-link-server` repo): `npm run seed:releas
 
 Set `PUBLIC_BASE_URL` on the server (e.g. `http://14.225.209.18:8080`).
 
-| Artifact | URL pattern |
+|| Artifact | URL pattern |
 |----------|-------------|
-| Installer (.exe) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-setup.exe` |
-| Portable (.zip) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-app.zip` |
-| Short links | `{PUBLIC_BASE_URL}/download` (exe), `{PUBLIC_BASE_URL}/download/zip` |
+|| Installer (.exe) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-setup.exe` |
+|| Portable (.zip) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-app.zip` |
+|| Short links | `{PUBLIC_BASE_URL}/download` (exe), `{PUBLIC_BASE_URL}/download/zip` |
 
 ### Download (offline / direct file)
 
@@ -62,8 +62,8 @@ The app starts the link server (port `11337`) and opens the editor URL.
 ### Paths
 
 - App: `C:\Program Files\Future Academy\`
-- Tools: `C:\Program Files\Future Academy\tools\` (beside `WindyLink.exe`)
-- User data: `%LOCALAPPDATA%\WindyLink\`
+- Tools: `C:\Program Files\Future Academy\tools\` (beside `Future Academy Link.exe`)
+- User data: `%LOCALAPPDATA%\Future Academy Link\`
 
 ### Troubleshooting
 
@@ -78,4 +78,4 @@ The app starts the link server (port `11337`) and opens the editor URL.
 ### Uninstall
 
 Windows Settings -> Apps -> Future Academy -> Uninstall.  
-Optional cleanup: delete `%LOCALAPPDATA%\WindyLink`.
+Optional cleanup: delete `%LOCALAPPDATA%\Future Academy Link`.

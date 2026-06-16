@@ -4,7 +4,7 @@
  *
  * Layout after unzip:
  *   Future Academy/
- *     WindyLink.exe
+ *     Future Academy Link.exe
  *     tools/          — arduino-cli, cores, libraries
  *     firmwares/      — prebuilt AVR firmwares
  */
@@ -23,6 +23,7 @@ const toolsRoot = path.join(repoRoot, 'tools');
 const firmwaresRoot = path.join(repoRoot, 'firmwares');
 const appIconPath = path.join(repoRoot, 'assets', 'FutureAcademy.ico');
 const arduinoCliPath = path.join(toolsRoot, 'Arduino', 'arduino-cli.exe');
+const exeName = 'Future Academy Link.exe';
 
 const formatBytes = bytes => {
     if (bytes >= 1024 * 1024 * 1024) {
@@ -126,10 +127,10 @@ const main = () => {
             'Future Academy — Windows portable bundle',
             '',
             '1. Unzip this folder anywhere (e.g. D:\\Future Academy).',
-            '2. Run WindyLink.exe (no installer required).',
-            '3. tools/ and firmwares/ must stay beside WindyLink.exe.',
+            '2. Run Future Academy Link.exe (no installer required).',
+            '3. tools/ and firmwares/ must stay beside Future Academy Link.exe.',
             '',
-            'User data: %LOCALAPPDATA%\\WindyLink',
+            'User data: %LOCALAPPDATA%\\Future Academy Link',
             'Editor: https://stem.windify.edu.vn/',
             '',
             'Optional: set WINDY_TOOLS_PATH if you move tools elsewhere.',
@@ -146,7 +147,7 @@ const main = () => {
 
     const size = fs.statSync(zipPath).size;
     console.log(`\nApp zip ready: dist/${zipName} (${formatBytes(size)})`);
-    console.log('Contains: GUI + tools/ + firmwares/ — unzip and run WindyLink.exe');
+    console.log('Contains: GUI + tools/ + firmwares/ — unzip and run Future Academy Link.exe');
     console.log('Upload to scratch-link-server: npm run seed:releases (from server repo)');
 };
 

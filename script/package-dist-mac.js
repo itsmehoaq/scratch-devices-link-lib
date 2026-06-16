@@ -5,7 +5,7 @@ const {path7za} = require('7zip-bin');
 
 const repoRoot = path.resolve(__dirname, '..');
 const pkg = require('../package.json');
-const exeName = 'WindyLink';
+const exeName = 'Future Academy Link';
 const exePath = path.join(repoRoot, 'dist', exeName);
 const trayExeName = 'FutureAcademyTray';
 const trayExePath = path.join(
@@ -122,7 +122,7 @@ if (!fs.existsSync(firmwaresRoot)) {
 
 if (!fs.existsSync(arduinoCliPath)) {
     console.error(`Missing arduino-cli: ${arduinoCliPath}`);
-    console.error('Run npm run fetch:tools:mac first.');
+    console.error('Make sure tools-mac/ is populated (see tools-mac/README.md).');
     process.exit(1);
 }
 
@@ -145,12 +145,12 @@ fs.writeFileSync(
         '',
         '1. Unzip this folder anywhere (e.g. ~/Applications/Future Academy).',
         '2. On the Mac, sign the binary (required on Apple Silicon):',
-        '   codesign --sign - ./WindyLink',
+        '   codesign --sign - ./Future Academy Link',
         '3. Run from Terminal:',
         '   cd "/path/to/Future Academy"',
-        '   ./WindyLink',
+        '   ./Future Academy Link',
         '',
-        'User data: ~/Library/Application Support/WindyLink',
+        'User data: ~/Library/Application Support/Future Academy Link',
         'Editor: https://stem.windify.edu.vn/',
         ''
     ].join('\n'),

@@ -1,5 +1,5 @@
 /**
- * Embed FutureAcademy.ico into the Electron-built WindyLink.exe.
+ * Embed FutureAcademy.ico into the Electron-built Future Academy Link.exe.
  * Why: signAndEditExecutable is disabled (no winCodeSign symlinks), so
  * electron-builder leaves the default Electron icon on the exe.
  */
@@ -9,7 +9,7 @@ const path = require('path');
 const {getGuiUnpackedDir} = require('./lib/electron-output');
 
 const repoRoot = path.resolve(__dirname, '..');
-const exePath = path.join(getGuiUnpackedDir(repoRoot), 'WindyLink.exe');
+const exePath = path.join(getGuiUnpackedDir(repoRoot), 'Future Academy Link.exe');
 const iconPath = path.join(repoRoot, 'assets', 'FutureAcademy.ico');
 
 const run = async () => {
@@ -27,8 +27,8 @@ const run = async () => {
     const {rcedit} = await import('rcedit');
     await rcedit(exePath, {
         icon: iconPath,
-        'product-name': 'Future Academy',
-        'file-description': 'Future Academy local hardware link server'
+        'product-name': 'Future Academy Link',
+        'file-description': 'Future Academy Link local hardware link server'
     });
     console.info(`[apply-gui-exe-icon] icon applied to ${exePath}`);
 };

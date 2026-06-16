@@ -1,5 +1,5 @@
 /**
- * Package FutureAcademy.app (macOS) — Rust-only, no Node runtime.
+ * Package Future Academy Link.app (macOS) — Rust-only, no Node runtime.
  * Usage: node script/package-app-mac.js [--arch arm64|x64]
  */
 const {spawnSync} = require('child_process');
@@ -23,8 +23,8 @@ if (!fs.existsSync(trayBin)) {
     process.exit(1);
 }
 
-const appName = 'FutureAcademy.app';
-const appPath = path.join(repoRoot, 'dist', arch === 'x64' ? `FutureAcademy-intel.app` : appName);
+const appName = 'Future Academy Link.app';
+const appPath = path.join(repoRoot, 'dist', arch === 'x64' ? `Future Academy Link — Intel.app` : appName);
 const macOsDir = path.join(appPath, 'Contents', 'MacOS');
 const resourcesDir = path.join(appPath, 'Contents', 'Resources');
 
@@ -67,6 +67,39 @@ fs.writeFileSync(path.join(appPath, 'Contents', 'Info.plist'), infoPlist, 'utf8'
 fs.copyFileSync(trayBin, path.join(macOsDir, 'FutureAcademyTray'));
 fs.chmodSync(path.join(macOsDir, 'FutureAcademyTray'), 0o755);
 
+// Bundle the pre-shipped macOS toolchain beside the binary so a packaged app
+// has arduino-cli + ESP32 cores available without touching user-data. The
+// Rust shell resolves `tools-mac/` next to its own exe (`base_dir/tools-mac`).
+const toolsSource = path.join(repoRoot, 'tools-mac');
+if (fs.existsSync(toolsSource)) {
+    const toolsDest = path.join(macOsDir, 'tools-mac');
+    fs.mkdirSync(toolsDest, {recursive: true});
+    let bundled = 0;
+    const walk = (currentSrc, currentDst) => {
+        for (const entry of fs.readdirSync(currentSrc, {withFileTypes: true})) {
+            const s = path.join(currentSrc, entry.name);
+            const d = path.join(currentDst, entry.name);
+            if (entry.isDirectory()) {
+                fs.mkdirSync(d, {recursive: true});
+                walk(s, d);
+            } else if (entry.isFile()) {
+                fs.copyFileSync(s, d);
+                bundled += 1;
+            } else if (entry.isSymbolicLink()) {
+                fs.symlinkSync(fs.readlinkSync(s), d);
+                bundled += 1;
+            }
+        }
+    };
+    walk(toolsSource, toolsDest);
+    console.log(`[package-app-mac] bundled ${bundled} files from tools-mac/`);
+} else {
+    console.warn(
+        '[package-app-mac] tools-mac/ not found at repo root — output will rely on the ' +
+        'end user populating it. Run `npm run update:tools` first.'
+    );
+}
+
 const icnsSource = path.join(repoRoot, 'assets', 'FutureAcademy.icns');
 if (fs.existsSync(icnsSource)) {
     fs.copyFileSync(icnsSource, path.join(resourcesDir, 'FutureAcademy.icns'));
@@ -85,4 +118,4 @@ const archLabel = arch === 'arm64' ? 'Apple Silicon (ARM64)' : 'Intel (x86_64)';
 console.log(`\nBuilt: ${appPath}`);
 console.log(`Arch:  ${archLabel}`);
 console.log(`Size:  ${(fs.statSync(path.join(macOsDir, 'FutureAcademyTray')).size / 1024 / 1024).toFixed(1)} MB`);
-console.log('\nTools (arduino-cli + esp32 core) are downloaded on first run.');
+console.log('\nTools (arduino-cli + esp32 core) are bundled in Contents/MacOS/tools-mac/ next to the binary.');

@@ -14,7 +14,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const pkg = require('../package.json');
 const useGui = process.argv.includes('--gui');
 const payloadRoot = path.join(repoRoot, 'dist', 'installer-payload');
-const cliExePath = path.join(repoRoot, 'dist', 'WindyLink.exe');
+const cliExePath = path.join(repoRoot, 'dist', 'Future Academy Link.exe');
 const trayExePath = path.join(
     repoRoot,
     'shell',
@@ -193,6 +193,7 @@ const main = async () => {
     fs.copyFileSync(path7za, path.join(payloadRoot, '7za.exe'));
 
     const appDir = path.join(payloadRoot, 'app');
+    const sevenzR = path.join(repoRoot, 'shell', '7zr.exe');
 
     if (useGui) {
         const {guiUnpackedDir} = resolveGuiPaths();
@@ -205,6 +206,9 @@ const main = async () => {
         copyDir(guiUnpackedDir, appDir);
         fs.copyFileSync(path7za, path.join(appDir, '7za.exe'));
         copyDir(firmwaresRoot, path.join(appDir, 'firmwares'));
+        if (fs.existsSync(sevenzR)) {
+            fs.copyFileSync(sevenzR, path.join(appDir, '7zr.exe'));
+        }
         if (!fs.existsSync(appIconPath)) {
             throw new Error(`Missing app icon: ${appIconPath}`);
         }
@@ -221,13 +225,16 @@ const main = async () => {
         await downloadNodeMsi(cachedNodeMsi);
         fs.copyFileSync(cachedNodeMsi, payloadNodeMsi);
 
-        fs.copyFileSync(exePath, path.join(payloadRoot, 'WindyLink.exe'));
+        fs.copyFileSync(exePath, path.join(payloadRoot, 'Future Academy Link.exe'));
         if (!fs.existsSync(trayExePath)) {
             console.error(`Missing tray exe: ${trayExePath}`);
             console.error('Run npm run build:shell:win first.');
             process.exit(1);
         }
         fs.copyFileSync(trayExePath, path.join(payloadRoot, 'FutureAcademyTray.exe'));
+        if (fs.existsSync(sevenzR)) {
+            fs.copyFileSync(sevenzR, path.join(payloadRoot, '7zr.exe'));
+        }
         copyDir(firmwaresRoot, path.join(payloadRoot, 'firmwares'));
         fs.writeFileSync(
             path.join(payloadRoot, 'build-type.txt'),

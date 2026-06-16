@@ -1,6 +1,6 @@
 [package]
 name = "future-academy-tray"
-version = "2.0.4"
+version = "2.0.5"
 edition = "2021"
 description = "Future Academy Link tray shell + local hardware link server (single binary, no Node runtime)."
 license = "MIT"
@@ -35,6 +35,7 @@ serialport = "4"
 # HTTP client (toolchain download). ureq kept for the synchronous 2s tray poll thread.
 reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 ureq = { version = "2.10", features = ["json"] }
+which = "7"
 
 # Archive extraction
 flate2 = "1"

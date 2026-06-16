@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const repoRoot = path.resolve(__dirname, '..');
-const exePath = path.join(repoRoot, 'dist', 'WindyLink.exe');
+const exePath = path.join(repoRoot, 'dist', 'Future Academy Link.exe');
 const iconPath = path.join(repoRoot, 'assets', 'FutureAcademy.ico');
 
 /**
@@ -19,8 +19,8 @@ const run = async () => {
     const {rcedit} = await import('rcedit');
     await rcedit(exePath, {
         icon: iconPath,
-        'product-name': 'Future Academy',
-        'file-description': 'Future Academy local hardware link server'
+        'product-name': 'Future Academy Link',
+        'file-description': 'Future Academy Link local hardware link server'
     });
     const afterSize = fs.statSync(exePath).size;
     console.warn(

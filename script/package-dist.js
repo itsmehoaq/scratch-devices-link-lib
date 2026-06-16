@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 
 const repoRoot = path.resolve(__dirname, '..');
-const exeName = 'WindyLink.exe';
+const pkg = require('../package.json');
+const exeName = 'Future Academy Link.exe';
 const exePath = path.join(repoRoot, 'dist', exeName);
 const stagingRoot = path.join(repoRoot, 'dist', 'staging', 'Future Academy');
 const arduinoCliPath = path.join(stagingRoot, 'tools', 'Arduino', 'arduino-cli.exe');
@@ -27,7 +28,7 @@ const copyFileSafe = (source, target, label) => {
     } catch (err) {
         if (err.code === 'EPERM' || err.code === 'EBUSY') {
             console.error(`Cannot write ${label}: ${target}`);
-            console.error('Close WindyLink.exe if it is running from the staging folder, then retry.');
+            console.error('Close Future Academy Link.exe if it is running from the staging folder, then retry.');
             process.exit(1);
         }
         throw err;
@@ -88,7 +89,7 @@ const prepareStagingRoot = () => {
             }
             console.warn(
                 `[package-dist] Could not remove staging folder (attempt ${attempt}/3). ` +
-                'Updating in place — close WindyLink.exe if packaging keeps failing.'
+                'Updating in place — close Future Academy Link.exe if packaging keeps failing.'
             );
             return false;
         }

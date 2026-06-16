@@ -2,7 +2,7 @@
 
 Local hardware link server for [Future Academy](https://stem.windify.edu.vn/).
 
-Single Rust binary — no Node.js or Electron at runtime. Downloads arduino-cli and ESP32 toolchain on first launch.
+Single Rust binary — no Node.js or Electron at runtime. Downloads arduino-cli and ESP32 toolchain on first launch when no local toolchain is present.
 
 ---
 
@@ -12,20 +12,20 @@ Download the latest release for your platform from the [Releases](../../releases
 
 | File | Platform |
 |------|----------|
-| `FutureAcademy-arm64.zip` | macOS Apple Silicon |
-| `FutureAcademy-intel.zip` | macOS Intel |
-| `FutureAcademy-win.zip` | Windows x64 |
+| `Future Academy Link.app` | macOS Apple Silicon |
+| `Future Academy Link — Intel.app` | macOS Intel |
+| `Future Academy Link.exe` | Windows x64 |
 
 **macOS:** unzip, right-click → Open (first time only — app is ad-hoc signed, not notarized). Or remove quarantine:
 ```bash
-xattr -cr FutureAcademy.app
+xattr -cr "Future Academy Link.app"
 ```
 
-**Windows:** unzip, run `FutureAcademyTray.exe`.
+**Windows:** unzip, run `Future Academy Link.exe`.
 
 On first run, arduino-cli and the ESP32/AVR toolchain are downloaded to:
-- macOS: `~/Library/Application Support/WindyLink/tools/`
-- Windows: `%LOCALAPPDATA%\FutureAcademy\tools\`
+- macOS: `~/Library/Application Support/Future Academy Link/tools/`
+- Windows: `%LOCALAPPDATA%\Future Academy Link\tools\`
 
 ---
 
@@ -35,13 +35,14 @@ Prerequisites: Rust (via rustup), Node.js (for packaging scripts only).
 
 ```bash
 # macOS Apple Silicon
-npm run build:app:mac:arm64     # → dist/FutureAcademy.app
+npm run build:app:mac:arm64     # → dist/Future Academy Link.app
 
 # macOS Intel
-npm run build:app:mac:x64       # → dist/FutureAcademy-intel.app
+npm run build:app:mac:x64       # → dist/Future Academy Link — Intel.app
 
-# Windows (cross-compile from macOS/Linux needs mingw, or build on Windows)
-npm run build:win:dist          # → dist/FutureAcademy-win/
+# Windows
+npm run build:win:installer     # → dist/Future Academy Link-<version>-x64-setup.exe
+npm run build:win:portable      # → dist/FutureAcademy-win/
 ```
 
 Cross-compile targets require rustup:
@@ -58,7 +59,7 @@ rustup target add x86_64-pc-windows-gnu
 - `FutureAcademyTray` starts a tray icon and an embedded HTTP/WebSocket server on `http://127.0.0.1:11337`
 - Serial devices appear in the tray menu in real time
 - Tray shows setup progress while tools download on first run
-- Log file: `~/Library/Logs/FutureAcademy/link.log` (macOS) / `%LOCALAPPDATA%\FutureAcademy\link.log` (Windows)
+- Log file: `~/Library/Logs/Future Academy Link/link.log` (macOS) / `%LOCALAPPDATA%\Future Academy Link\link.log` (Windows)
 - Click **Show Console Log** in the tray to open the log
 
 ---

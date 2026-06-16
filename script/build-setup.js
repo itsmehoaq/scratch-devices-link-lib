@@ -5,7 +5,7 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..');
 const pkg = require('../package.json');
 const payloadRoot = path.join(repoRoot, 'dist', 'installer-payload');
-const issPath = path.join(repoRoot, 'installer', 'WindyLink.iss');
+const issPath = path.join(repoRoot, 'installer', 'FutureAcademyLink.iss');
 const setupOut = path.join(repoRoot, 'dist', `FutureAcademy-${pkg.version}-x64-setup.exe`);
 
 const INNO_SETUP_DIRS = [

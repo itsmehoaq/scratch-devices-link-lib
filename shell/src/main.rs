@@ -7,6 +7,7 @@
 // menu. There is NO Node runtime — the Rust binary IS the server.
 
 mod ansi;
+mod download;
 mod paths;
 mod serial;
 mod server;
