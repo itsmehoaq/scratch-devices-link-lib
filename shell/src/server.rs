@@ -225,14 +225,13 @@ async fn is_same_server(host: &str, port: u16) -> bool {
     }
 }
 
-/// Kill all stale WinLink/FutureAcademy processes: by port AND by known
-/// process names (covers old Node/pkg builds that may not be on the port yet).
+/// Kill the stale server instance listening on the given port.
 fn kill_stale_instances(port: u16) {
     let own_pid = std::process::id();
 
     #[cfg(unix)]
     {
-        // 1. Kill whatever is listening on the port.
+        // Kill whatever is listening on the port (old server instance).
         if let Ok(o) = std::process::Command::new("lsof")
             .args(["-ti", &format!("tcp:{}", port)])
             .output()
@@ -246,26 +245,11 @@ fn kill_stale_instances(port: u16) {
                 }
             }
         }
-
-        // 2. Kill any other FutureAcademyTray processes (old Rust or Node/pkg builds).
-        let patterns = ["FutureAcademyTray", "WindyLink", "windy-link"];
-        for pat in &patterns {
-            if let Ok(o) = std::process::Command::new("pgrep").args(["-f", pat]).output() {
-                for s in String::from_utf8_lossy(&o.stdout).split_whitespace() {
-                    if let Ok(pid) = s.trim().parse::<u32>() {
-                        if pid != own_pid {
-                            tracing::warn!("[link] killing stale process {} (pid {})", pat, pid);
-                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     #[cfg(windows)]
     {
-        // 1. Kill by port.
+        // Kill whatever is listening on the port (old server instance).
         if let Ok(o) = std::process::Command::new("netstat").args(["-ano"]).output() {
             let needle = format!(":{} ", port);
             for line in String::from_utf8_lossy(&o.stdout).lines() {
@@ -283,13 +267,6 @@ fn kill_stale_instances(port: u16) {
                 }
             }
         }
-
-        // 2. Kill by name.
-        for name in &["FutureAcademyTray.exe", "WindyLink.exe"] {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/IM", name])
-                .output();
-        }
     }
 }
 
@@ -298,8 +275,7 @@ fn kill_stale_instances(port: u16) {
 pub async fn start(app: Arc<AppState>) -> Result<(), String> {
     let addr = format!("{}:{}", app.host, app.port);
 
-    // Always kill stale instances before trying to bind — covers old Node/pkg
-    // builds and previous Rust instances regardless of their health status.
+    // Kill the old server on our port before trying to bind.
     kill_stale_instances(app.port);
 
     // Retry bind for up to 5 s — gives the OS time to release the port after
