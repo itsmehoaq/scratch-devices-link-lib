@@ -17,6 +17,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::ansi;
 use crate::paths;
+use crate::progress;
 use crate::serial::{self, DeviceInfo, OpenConfig, OpenPort};
 use crate::upload::arduino::Arduino;
 use crate::upload::esp32::Esp32;
@@ -421,6 +422,16 @@ impl SerialportSession {
             None => return Err(format!("invalid peripheral ID: {}", peripheral_id)),
         };
         self.discover_filters = None;
+
+        // Log device info to console / tracing.
+        let vid = device.vendor_id.clone().unwrap_or_default();
+        let pid = device.product_id.clone().unwrap_or_default();
+        let mfr = device.manufacturer.clone().unwrap_or_default();
+        let sn = device.serial_number.clone().unwrap_or_default();
+        tracing::info!(
+            "[serial] connecting to {} (VID:{}, PID:{}, mfr:{}, sn:{})",
+            device.path, vid, pid, mfr, sn
+        );
 
         let cfg = params.get("peripheralConfig").and_then(|c| c.get("config"));
         let open_cfg = OpenConfig {
@@ -864,20 +875,29 @@ impl SerialportSession {
         self.tool_abort = Some(abort.clone());
 
         // Run the blocking compile in a worker thread; stream via the out sink.
+        let build_sp = progress::Spinner::new("Compiling sketch…");
         let build_res = run_arduino_build(out.clone(), &path, config.clone(), &user_data, &tools, &code, abort.clone()).await;
+        drop(build_sp);
 
         match build_res {
             Ok((UploadResult::Success, _tool_path)) => {
                 self.sendstd(&format!("{}Disconnect serial port\n", ansi::CLEAR), None);
                 let _ = self.disconnect(false).await;
                 self.sendstd(&format!("{}Disconnected successfully, flash program starting...\n", ansi::CLEAR), None);
+                let flash_sp = progress::Spinner::new("Flashing firmware…");
                 let flash_res = run_arduino_flash(out.clone(), &path, config.clone(), &user_data, &tools, None, abort.clone()).await;
+                drop(flash_sp);
                 match flash_res {
                     Ok((flash_code, resolved_path)) => {
                         self.sync_upload_port(&resolved_path).await;
+                        let reconnect_sp = progress::Spinner::new_dim("Reconnecting after flash…");
                         match self.connect_after_flash_with_retries().await {
-                            Ok(()) => self.resume_read_after_flash_reconnect(),
+                            Ok(()) => {
+                                drop(reconnect_sp);
+                                self.resume_read_after_flash_reconnect()
+                            }
                             Err(e) => {
+                                reconnect_sp.finish_warn(&format!("Reconnect failed: {}", e));
                                 self.sendstd(&format!("{}[serialport] Flash OK but serial reopen failed: {}. Reconnect manually.\n", ansi::YELLOW_DARK, e), None);
                                 self.session.send_notification("connectError", Some(json!({ "message": e })));
                             }
@@ -926,13 +946,20 @@ impl SerialportSession {
         self.sendstd(&format!("{}Disconnected successfully, flash program starting...\n", ansi::CLEAR), None);
 
         let firmware = config.get("firmware").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let flash_sp = progress::Spinner::new("Flashing firmware…");
         let flash_res = run_arduino_flash_firmware(out.clone(), &path, config.clone(), &user_data, &tools, firmware, abort.clone()).await;
+        drop(flash_sp);
         match flash_res {
             Ok((flash_code, resolved_path)) => {
                 self.sync_upload_port(&resolved_path).await;
+                let reconnect_sp = progress::Spinner::new_dim("Reconnecting after flash…");
                 match self.connect_after_flash_with_retries().await {
-                    Ok(()) => self.resume_read_after_flash_reconnect(),
+                    Ok(()) => {
+                        drop(reconnect_sp);
+                        self.resume_read_after_flash_reconnect()
+                    }
                     Err(e) => {
+                        reconnect_sp.finish_warn(&format!("Reconnect failed: {}", e));
                         self.session.send_notification("connectError", Some(json!({ "message": e })));
                     }
                 }
@@ -979,12 +1006,19 @@ impl SerialportSession {
         // bins = params.bins || params
         let bins = params.get("bins").cloned().unwrap_or_else(|| params.clone());
         let cfg = params.clone();
+        let flash_sp = progress::Spinner::new("Flashing ESP32…");
         let flash_res = run_esp32_flash(out.clone(), &path, cfg, &user_data, &tools, bins, abort.clone()).await;
+        drop(flash_sp);
         match flash_res {
             Ok(flash_code) => {
+                let reconnect_sp = progress::Spinner::new_dim("Reconnecting after flash…");
                 match self.connect_after_flash_with_retries().await {
-                    Ok(()) => self.resume_read_after_flash_reconnect(),
+                    Ok(()) => {
+                        drop(reconnect_sp);
+                        self.resume_read_after_flash_reconnect()
+                    }
                     Err(e) => {
+                        reconnect_sp.finish_warn(&format!("Reconnect failed: {}", e));
                         self.sendstd(&format!("{}[esp32] reconnect after flash failed: {}\n", ansi::YELLOW_DARK, e), None);
                         self.session.send_notification("peripheralUnplug", None);
                     }
@@ -1113,7 +1147,7 @@ async fn run_arduino_build(
     let code = code.to_string();
     tokio::task::spawn_blocking(move || {
         let mut send = make_sendstd(out);
-        let tool = Arduino::new(&path, config, &user_data, &tools, &mut send);
+        let tool = Arduino::new(&path, config, &user_data, &tools);
         // wire external abort flag into the tool
         let tool_abort = tool.abort_flag();
         spawn_abort_bridge(abort, tool_abort);
@@ -1138,7 +1172,7 @@ async fn run_arduino_flash(
     let tools = tools.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut send = make_sendstd(out);
-        let mut tool = Arduino::new(&path, config, &user_data, &tools, &mut send);
+        let mut tool = Arduino::new(&path, config, &user_data, &tools);
         let tool_abort = tool.abort_flag();
         spawn_abort_bridge(abort, tool_abort);
         let fw = firmware.as_ref().map(std::path::PathBuf::from);
@@ -1163,7 +1197,7 @@ async fn run_arduino_flash_firmware(
     let tools = tools.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut send = make_sendstd(out);
-        let mut tool = Arduino::new(&path, config, &user_data, &tools, &mut send);
+        let mut tool = Arduino::new(&path, config, &user_data, &tools);
         let tool_abort = tool.abort_flag();
         spawn_abort_bridge(abort, tool_abort);
         let res = tool.flash_realtime_firmware(&mut send)?;

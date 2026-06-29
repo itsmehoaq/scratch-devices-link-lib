@@ -16,6 +16,8 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use serde::Deserialize;
 
+use crate::progress;
+
 pub const ESP32_INDEX_URL: &str =
     "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json";
 pub const ARDUINO_INDEX_URL: &str =
@@ -145,6 +147,11 @@ async fn download_file<F: FnMut(u8)>(
         return Err(format!("download failed: HTTP {}", resp.status()));
     }
     let total = resp.content_length().unwrap_or(0);
+    let file_name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    let bar = progress::DownloadBar::new(file_name, total);
     let mut received: u64 = 0;
     let mut file = fs::File::create(dest).map_err(|e| e.to_string())?;
     let mut stream = resp.bytes_stream();
@@ -152,12 +159,14 @@ async fn download_file<F: FnMut(u8)>(
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).map_err(|e| e.to_string())?;
         received += chunk.len() as u64;
+        bar.inc(chunk.len() as u64);
         if total > 0 {
             let pct = ((received as f64 / total as f64) * 100.0).round() as u8;
             on_progress(pct.min(100));
         }
     }
     file.flush().map_err(|e| e.to_string())?;
+    bar.finish(&format!("{} downloaded", file_name));
     Ok(())
 }
 
@@ -692,7 +701,11 @@ async fn setup_inner(
     }
 
     phase("extracting", 0);
-    extract_archive(&archive_path, arduino_dir)?;
+    {
+        let sp = progress::Spinner::new("Extracting arduino-cli…");
+        extract_archive(&archive_path, arduino_dir)?;
+        sp.finish_ok("arduino-cli extracted");
+    }
 
     #[cfg(unix)]
     {
@@ -705,14 +718,22 @@ async fn setup_inner(
     }
 
     phase("configuring", 0);
-    write_arduino_config(config_path, arduino_dir)?;
+    {
+        let sp = progress::Spinner::new("Writing arduino-cli config…");
+        write_arduino_config(config_path, arduino_dir)?;
+        sp.finish_ok("arduino-cli config written");
+    }
 
     phase("updating-index", 0);
-    let cli = cli_path.to_path_buf();
-    let cfg = config_path.to_path_buf();
-    tokio::task::spawn_blocking(move || run_cli(&cli, &["core", "update-index"], &cfg))
-        .await
-        .map_err(|e| e.to_string())??;
+    {
+        let sp = progress::Spinner::new("Updating package index…");
+        let cli = cli_path.to_path_buf();
+        let cfg = config_path.to_path_buf();
+        tokio::task::spawn_blocking(move || run_cli(&cli, &["core", "update-index"], &cfg))
+            .await
+            .map_err(|e| e.to_string())??;
+        sp.finish_ok("Package index updated");
+    }
 
     // ── Selective ESP32 install ──────────────────────────────────────────────
     phase("downloading-platform", 0);
@@ -723,6 +744,8 @@ async fn setup_inner(
 
     // Prune non-S3 content so only ESP32-S3 chip data is kept on disk.
     phase("pruning", 0);
+    {
+        let sp = progress::Spinner::new("Pruning unused chip variants…");
 
     // 1. esp32-arduino-libs: each version subdir contains one folder per chip.
     //    Keep only esp32s3, remove all others.
@@ -771,6 +794,8 @@ async fn setup_inner(
                 }
             }
         }
+    }
+        sp.finish_ok("Pruning complete");
     }
 
     phase("done", 100);

@@ -48,14 +48,13 @@ pub struct Arduino {
 }
 
 impl Arduino {
-    /// Constructor. Mirrors the JS constructor: derives all paths, resolves the
-    /// platform fqbn, and runs `initArduinoCli`.
+    /// Constructor. Mirrors the JS constructor: derives all paths and resolves
+    /// the platform fqbn. CLI environment is initialized once at app startup.
     pub fn new(
         peripheral_path: &str,
         mut config: Value,
         user_data_path: &Path,
         tools_path: &Path,
-        sendstd: &mut SendStd,
     ) -> Self {
         let arduino_path = tools_path.join("Arduino");
         let firmware_dir = tools_path
@@ -110,7 +109,6 @@ impl Arduino {
             fqbn,
             abort: Arc::new(AtomicBool::new(false)),
         };
-        me.init_arduino_cli(sendstd);
         me
     }
 
@@ -120,61 +118,6 @@ impl Arduino {
 
     pub fn peripheral_path(&self) -> &str {
         &self.peripheral_path
-    }
-
-    fn run_cli_sync(&self, args: &[&str]) {
-        let mut cmd = std::process::Command::new(&self.arduino_cli_path);
-        cmd.args(args);
-        configure_killable(&mut cmd);
-        let _ = cmd.output();
-    }
-
-    /// Port of `initArduinoCli`: config init/dump/set.
-    fn init_arduino_cli(&self, sendstd: &mut SendStd) {
-        if !self.arduino_cli_path.exists() {
-            sendstd(
-                &format!(
-                    "{}arduino-cli not found: {}\n",
-                    ansi::RED,
-                    self.arduino_cli_path.display()
-                ),
-                None,
-            );
-            return;
-        }
-        let cfg = self.config_file_path.to_string_lossy().to_string();
-        self.run_cli_sync(&["config", "init", "--dest-file", &cfg]);
-
-        let out = std::process::Command::new(&self.arduino_cli_path)
-            .args(["config", "dump", "--config-file", &cfg])
-            .output();
-        if let Ok(out) = out {
-            let parsed: Value = serde_yaml::from_slice(&out.stdout).unwrap_or(Value::Null);
-            let directories = parsed.get("directories");
-            let data = directories.and_then(|d| d.get("data")).and_then(|v| v.as_str());
-            let downloads = directories
-                .and_then(|d| d.get("downloads"))
-                .and_then(|v| v.as_str());
-            let user = directories.and_then(|d| d.get("user")).and_then(|v| v.as_str());
-            let arduino = self.arduino_path.to_string_lossy().to_string();
-            let staging = self.arduino_path.join("staging").to_string_lossy().to_string();
-            if data != Some(arduino.as_str())
-                || downloads != Some(staging.as_str())
-                || user != Some(arduino.as_str())
-            {
-                sendstd(
-                    &format!("{}arduino cli config has not been initialized yet.\n", ansi::YELLOW_DARK),
-                    None,
-                );
-                sendstd(
-                    &format!("{}set the path to {}.\n", ansi::GREEN_DARK, arduino),
-                    None,
-                );
-                self.run_cli_sync(&["config", "set", "directories.data", &arduino, "--config-file", &cfg]);
-                self.run_cli_sync(&["config", "set", "directories.downloads", &staging, "--config-file", &cfg]);
-                self.run_cli_sync(&["config", "set", "directories.user", &arduino, "--config-file", &cfg]);
-            }
-        }
     }
 
     /// Port of `abortUpload`. The session normally drives aborts through the
@@ -1275,5 +1218,55 @@ impl Arduino {
         let firmware = self.cfg_str("firmware", "");
         let path = self.firmware_dir.join(firmware);
         self.flash(Some(&path), sendstd)
+    }
+}
+
+/// Run arduino-cli with args. Static helper for CLI environment init.
+fn run_cli_sync(cli_path: &Path, args: &[&str]) {
+    let mut cmd = std::process::Command::new(cli_path);
+    cmd.args(args);
+    configure_killable(&mut cmd);
+    let _ = cmd.output();
+}
+
+/// Initialize the Arduino CLI environment. Called once at app startup.
+/// Port of `initArduinoCli`, but uses tracing instead of sendstd.
+pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
+    let arduino_path = tools_path.join("Arduino");
+    let cli_path = resolve_tool_binary(tools_path, "Arduino/arduino-cli");
+    if !cli_path.exists() {
+        tracing::warn!("[link] arduino-cli not found: {}", cli_path.display());
+        return;
+    }
+    let _ = std::fs::create_dir_all(user_data_path.join("arduino"));
+    let cfg = user_data_path
+        .join("arduino")
+        .join("arduino-cli.yaml");
+    let cfg_str = cfg.to_string_lossy().to_string();
+
+    run_cli_sync(&cli_path, &["config", "init", "--dest-file", &cfg_str]);
+
+    let out = std::process::Command::new(&cli_path)
+        .args(["config", "dump", "--config-file", &cfg_str])
+        .output();
+    if let Ok(out) = out {
+        let parsed: Value = serde_yaml::from_slice(&out.stdout).unwrap_or(Value::Null);
+        let directories = parsed.get("directories");
+        let data = directories.and_then(|d| d.get("data")).and_then(|v| v.as_str());
+        let downloads = directories
+            .and_then(|d| d.get("downloads"))
+            .and_then(|v| v.as_str());
+        let user = directories.and_then(|d| d.get("user")).and_then(|v| v.as_str());
+        let arduino = arduino_path.to_string_lossy().to_string();
+        let staging = arduino_path.join("staging").to_string_lossy().to_string();
+        if data != Some(arduino.as_str())
+            || downloads != Some(staging.as_str())
+            || user != Some(arduino.as_str())
+        {
+            tracing::info!("[link] arduino cli config not initialized — setting paths to {}", arduino);
+            run_cli_sync(&cli_path, &["config", "set", "directories.data", &arduino, "--config-file", &cfg_str]);
+            run_cli_sync(&cli_path, &["config", "set", "directories.downloads", &staging, "--config-file", &cfg_str]);
+            run_cli_sync(&cli_path, &["config", "set", "directories.user", &arduino, "--config-file", &cfg_str]);
+        }
     }
 }

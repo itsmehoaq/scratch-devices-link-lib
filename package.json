@@ -18,6 +18,7 @@
     "clean": "rimraf tools firmwares",
     "clean:dist": "node script/clean-dist.js",
     "lint": "eslint ./script",
+    "start": "rimraf shell\\target\\x86_64-pc-windows-gnu\\release\\.winblockData\\link && cargo run --release --manifest-path shell/Cargo.toml --target x86_64-pc-windows-gnu",
     "test": "",
     "tools:archive": "node script/archive-tools.js --overwrite",
     "tools:prune": "node script/prune-tools.js --apply",

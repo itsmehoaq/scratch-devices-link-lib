@@ -9,6 +9,7 @@
 mod ansi;
 mod download;
 mod paths;
+mod progress;
 mod serial;
 mod server;
 mod toolchain;
@@ -202,8 +203,16 @@ fn start_runtime() {
                     if let Err(e) = res {
                         tracing::error!("[link] toolchain setup failed: {}", e);
                         app_setup.set_setup_phase(Some("error".to_string()));
+                    } else {
+                        // CLI environment init after successful toolchain setup.
+                        upload::arduino::init_cli_environment(&tools_setup, &app_setup.user_data_path);
                     }
                 });
+            }
+
+            // Initialize CLI environment at startup when tools already exist.
+            if ok {
+                upload::arduino::init_cli_environment(&tools_path, &app.user_data_path);
             }
 
             // Serve forever (with EADDRINUSE same-server retry).
