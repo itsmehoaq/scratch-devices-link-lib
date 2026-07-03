@@ -433,6 +433,11 @@ impl SerialportSession {
             device.path, vid, pid, mfr, sn
         );
 
+        // Clear old build artifacts when establishing a fresh connection.
+        if !is_after_upload {
+            self.clear_old_builds();
+        }
+
         let cfg = params.get("peripheralConfig").and_then(|c| c.get("config"));
         let open_cfg = OpenConfig {
             baud_rate: cfg.and_then(|c| c.get("baudRate")).and_then(|v| v.as_u64()).unwrap_or(115200) as u32,
@@ -534,6 +539,30 @@ impl SerialportSession {
         }
         self.is_in_disconnect = false;
         Ok(())
+    }
+
+    /// Clear old build artifacts from previous upload sessions. Keeps the
+    /// arduino-cli config intact.
+    fn clear_old_builds(&self) {
+        let arduino_dir = self.user_data_path.join("arduino");
+        if !arduino_dir.exists() {
+            return;
+        }
+        let config_file = arduino_dir.join("arduino-cli.yaml");
+        if let Ok(entries) = std::fs::read_dir(&arduino_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path == config_file {
+                    continue;
+                }
+                if path.is_dir() {
+                    tracing::debug!("[serial] clearing old build: {}", path.display());
+                    let _ = std::fs::remove_dir_all(&path);
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
     }
 
     fn notify_connect_open_failure(&mut self, msg: &str) {

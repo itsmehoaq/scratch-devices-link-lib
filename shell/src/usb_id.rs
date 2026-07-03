@@ -16,11 +16,6 @@ pub fn lookup(pnpid: &str) -> Option<&'static str> {
         "USB\\VID_0403&PID_6010" => Some("USB-SERIAL FTDI"),
         // CP2102
         "USB\\VID_10C4&PID_EA60" => Some("USB-SERIAL CP2102"),
-        // Arduino Uno
-        "USB\\VID_2341&PID_0043" => Some("Arduino UNO"),
-        "USB\\VID_2341&PID_0001" => Some("Arduino UNO"),
-        "USB\\VID_2A03&PID_0043" => Some("Arduino UNO"),
-        "USB\\VID_2341&PID_0243" => Some("Arduino UNO"),
         _ => None,
     }
 }

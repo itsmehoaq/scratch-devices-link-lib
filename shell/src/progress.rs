@@ -4,7 +4,7 @@
 
 #![allow(dead_code)]
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -18,7 +18,15 @@ pub fn set_headless(headless: bool) {
 }
 
 fn is_headless() -> bool {
-    HEADLESS.load(Ordering::Relaxed) || !std::io::stderr().is_terminal()
+    HEADLESS.load(Ordering::Relaxed) || !std::io::stdout().is_terminal()
+}
+
+fn make_bar(total: u64) -> ProgressBar {
+    ProgressBar::with_draw_target(Some(total), ProgressDrawTarget::stdout())
+}
+
+fn make_spinner() -> ProgressBar {
+    ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout())
 }
 
 // ── shared style templates ────────────────────────────────────────────────
@@ -56,7 +64,7 @@ impl DownloadBar {
             tracing::info!("[download] {label} ({total_bytes} bytes)");
             return Self { bar: None };
         }
-        let bar = ProgressBar::new(total_bytes);
+        let bar = make_bar(total_bytes);
         bar.set_style(bar_style());
         bar.set_message(label.to_string());
         Self { bar: Some(bar) }
@@ -104,7 +112,7 @@ impl Spinner {
             tracing::info!("[link] {msg}");
             return Self { bar: None };
         }
-        let bar = ProgressBar::new_spinner();
+        let bar = make_spinner();
         bar.set_style(spinner_style());
         bar.set_message(msg.to_string());
         bar.enable_steady_tick(Duration::from_millis(80));
@@ -117,7 +125,7 @@ impl Spinner {
             tracing::info!("[link]   {msg}");
             return Self { bar: None };
         }
-        let bar = ProgressBar::new_spinner();
+        let bar = make_spinner();
         bar.set_style(spinner_style_dim());
         bar.set_message(msg.to_string());
         bar.enable_steady_tick(Duration::from_millis(100));
@@ -193,7 +201,7 @@ impl MultiBar {
 
     pub fn add_bar(&self, label: &str, total: u64) -> DownloadBar {
         if let Some(mp) = &self.mp {
-            let bar = mp.add(ProgressBar::new(total));
+            let bar = mp.add(make_bar(total));
             bar.set_style(bar_style());
             bar.set_message(label.to_string());
             DownloadBar { bar: Some(bar) }
@@ -204,7 +212,7 @@ impl MultiBar {
 
     pub fn add_spinner(&self, msg: &str) -> Spinner {
         if let Some(mp) = &self.mp {
-            let bar = mp.add(ProgressBar::new_spinner());
+            let bar = mp.add(make_spinner());
             bar.set_style(spinner_style());
             bar.set_message(msg.to_string());
             bar.enable_steady_tick(Duration::from_millis(80));

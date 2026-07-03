@@ -50,7 +50,8 @@ uuid = { version = "1", features = ["v4"] }
 # Misc
 open = "5"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["time"] }
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 indicatif = "0.17"
 
 [target.'cfg(windows)'.dependencies]

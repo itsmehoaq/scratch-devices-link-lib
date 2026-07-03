@@ -26,6 +26,8 @@ use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use serde::Deserialize;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use time::format_description;
+use tracing_subscriber::fmt::time::OffsetTime;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
 pub use server::AppState;
@@ -103,6 +105,14 @@ impl TrayState {
 #[derive(Debug)]
 enum UserEvent {
     Status(TrayState),
+}
+
+/// Return current local time as "HH:MM:SS" suitable for log prefixes.
+pub fn log_timestamp() -> String {
+    let now = time::OffsetDateTime::now_local()
+        .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    now.format(&format_description::parse_borrowed::<2>("[hour]:[minute]:[second]").unwrap())
+        .unwrap_or_else(|_| String::new())
 }
 
 fn log_path() -> std::path::PathBuf {
@@ -224,8 +234,14 @@ fn start_runtime() {
 }
 
 fn main() {
-    // Logging to stderr (the tray's parent process / log file captures it).
+    // Logging to stderr with local HH:MM:SS timestamps.
+    let offset = time::UtcOffset::current_local_offset()
+        .unwrap_or(time::UtcOffset::UTC);
+    let fmt = format_description::parse_borrowed::<2>("[hour]:[minute]:[second]")
+        .expect("valid time format");
+    let timer = OffsetTime::new(offset, fmt);
     let _ = tracing_subscriber::fmt()
+        .with_timer(timer)
         .with_writer(std::io::stderr)
         .try_init();
 
@@ -234,8 +250,23 @@ fn main() {
         let _ = std::fs::create_dir_all(parent);
     }
 
+    // --headless: run without tray icon, just the server. Use Ctrl+C to stop.
+    let headless = std::env::args().any(|a| a == "--headless");
+    if headless {
+        progress::set_headless(true);
+        tracing::info!("[link] starting in headless mode (no tray icon)");
+    }
+
     // Start the embedded link server on its own runtime thread (no Node spawn).
     start_runtime();
+
+    if headless {
+        tracing::info!("[link] server running — press Ctrl+C to stop");
+        // Block forever; the runtime thread lives until the process is killed.
+        loop {
+            thread::park();
+        }
+    }
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
