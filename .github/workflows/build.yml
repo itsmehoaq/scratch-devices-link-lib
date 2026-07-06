@@ -23,14 +23,14 @@ jobs:
             rust_target: aarch64-apple-darwin
             pkg_script: node script/package-app-mac.js --arch arm64
             artifact_name: FutureAcademy-arm64
-            zip_cmd: ditto -c -k --sequesterRsrc --keepParent dist/FutureAcademy.app dist/FutureAcademy-arm64.zip
+            app_path: dist/Future Academy Link.app
 
           - label: macOS Intel
             os: macos-latest
             rust_target: x86_64-apple-darwin
             pkg_script: node script/package-app-mac.js --arch x64
             artifact_name: FutureAcademy-intel
-            zip_cmd: ditto -c -k --sequesterRsrc --keepParent dist/FutureAcademy-intel.app dist/FutureAcademy-intel.zip
+            app_path: dist/Future Academy Link — Intel.app
 
           - label: Windows x64
             os: windows-latest
@@ -63,6 +63,11 @@ jobs:
         run: ${{ matrix.pkg_script }}
 
       - name: Create zip
+        if: matrix.app_path
+        run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
+
+      - name: Create zip (Windows)
+        if: matrix.zip_cmd
         run: ${{ matrix.zip_cmd }}
 
       - name: Upload artifact
