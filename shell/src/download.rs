@@ -8,7 +8,7 @@
 //! The archive URL and its expected SHA256 are fixed at compile time so they
 //! cannot be tampered with at runtime.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -157,5 +157,119 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     // In-process 7z extraction. Supports LZMA2 + Delta used by the release
     // archives, which is why we replaced the old `7zr` shell-out (it had to be
     // installed separately and was missing on most user machines).
-    sevenz_rust2::decompress_file(archive, dest).map_err(|e| format!("7z extract failed: {e}"))
+    //
+    // We extract to a sibling temp dir rather than `dest` directly because the
+    // archive is packed with a top-level `tools/` wrapper (matching the asset
+    // name). Extracting straight into `dest` would land files at
+    // `dest/tools/...`, leaving `dest/Arduino/arduino-cli[.exe]` missing and
+    // breaking the CLI lookup in `toolchain::check_toolchain`.
+    let stage_parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    let stage = unique_stage_dir(stage_parent)?;
+    sevenz_rust2::decompress_file(archive, &stage)
+        .map_err(|e| format!("7z extract failed: {e}"))?;
+
+    // If the archive flattened into a single top-level dir, hoist its contents
+    // up so the caller sees files directly under `dest` (the standard
+    // `tar --strip-components=1` pattern). If the archive ever ships flat, this
+    // is a no-op.
+    flatten_single_root(&stage, dest)?;
+
+    // Best-effort cleanup of the staging dir.
+    let _ = std::fs::remove_dir_all(&stage);
+    Ok(())
+}
+
+/// Pick a non-existent staging dir next to `dest`. Suffixes with `.stage-N` so
+/// repeated failures don't collide.
+fn unique_stage_dir(parent: &Path) -> Result<PathBuf, String> {
+    for n in 0..1000 {
+        let candidate = parent.join(format!(".windify-tools-stage-{n}"));
+        if !candidate.exists() {
+            std::fs::create_dir_all(&candidate).map_err(|e| format!("mkdir stage dir: {e}"))?;
+            return Ok(candidate);
+        }
+    }
+    Err("could not allocate a tools staging dir".to_string())
+}
+
+/// If `stage` contains exactly one entry and that entry is a directory, move
+/// its contents up to `dest` and remove the now-empty wrapper. Otherwise move
+/// `stage`'s contents directly into `dest`.
+fn flatten_single_root(stage: &Path, dest: &Path) -> Result<(), String> {
+    let entries = collect_children(stage)?;
+    if entries.len() == 1 && entries[0].is_dir() {
+        let wrapper = &entries[0];
+        move_children(wrapper, dest)?;
+        let _ = std::fs::remove_dir(wrapper);
+    } else if !entries.is_empty() {
+        move_children(stage, dest)?;
+    }
+    Ok(())
+}
+
+fn collect_children(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    let read = std::fs::read_dir(dir).map_err(|e| format!("read stage dir: {e}"))?;
+    for entry in read {
+        let entry = entry.map_err(|e| format!("iterate stage dir: {e}"))?;
+        if let Some(name) = entry.file_name().to_str() {
+            // Skip our own staging bookkeeping; should never appear here, but be safe.
+            if name.starts_with(".windify-tools-stage-") {
+                continue;
+            }
+            out.push(entry.path());
+        }
+    }
+    Ok(out)
+}
+
+/// Move every entry under `src` directly into `dst`. Refuses to clobber
+/// existing files so a stale extraction doesn't silently overwrite user data.
+fn move_children(src: &Path, dst: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(src).map_err(|e| format!("read src dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("iterate src dir: {e}"))?;
+        let from = entry.path();
+        let file_name = entry.file_name();
+        let to = dst.join(&file_name);
+        if to.exists() {
+            return Err(format!(
+                "refusing to overwrite existing path during extraction: {}",
+                to.display()
+            ));
+        }
+        // `rename` works across the same filesystem; if `src` and `dst` are on
+        // different drives (rare for a staging dir next to the target) fall
+        // back to a copy + delete.
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {}
+            Err(_) => move_across_drives(&from, &to)?,
+        }
+    }
+    Ok(())
+}
+
+fn move_across_drives(from: &Path, to: &Path) -> Result<(), String> {
+    if from.is_dir() {
+        copy_dir_recursive(from, to)?;
+        std::fs::remove_dir_all(from).map_err(|e| format!("cleanup src dir: {e}"))?;
+    } else {
+        std::fs::copy(from, to).map_err(|e| format!("copy file: {e}"))?;
+        std::fs::remove_file(from).map_err(|e| format!("cleanup src file: {e}"))?;
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| format!("mkdir dst: {e}"))?;
+    for entry in std::fs::read_dir(src).map_err(|e| format!("read src: {e}"))? {
+        let entry = entry.map_err(|e| format!("iterate src: {e}"))?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|e| format!("copy file: {e}"))?;
+        }
+    }
+    Ok(())
 }
