@@ -44,7 +44,8 @@ pub async fn ws_handler(
     app.inc_connection();
     tracing::info!("[link] new connection: path={}", path);
     let app2 = app.clone();
-    ws.on_upgrade(move |socket| handle_socket(socket, app2)).into_response()
+    ws.on_upgrade(move |socket| handle_socket(socket, app2))
+        .into_response()
 }
 
 async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {

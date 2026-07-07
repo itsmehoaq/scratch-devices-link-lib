@@ -22,18 +22,34 @@ pub const PERIPHERAL_UNPLUG_CHECK_INTERVAL_MS: u64 = 100;
 pub const PERIPHERAL_UNPLUG_CLOSED_STREAK: u32 = if cfg!(target_os = "windows") { 15 } else { 8 };
 pub const POST_OPEN_UNPLUG_GRACE_MS: u64 = 2500;
 
-pub const POST_FLASH_RECONNECT_INITIAL_DELAY_MS: u64 =
-    if cfg!(target_os = "windows") { 2800 } else { 1400 };
+pub const POST_FLASH_RECONNECT_INITIAL_DELAY_MS: u64 = if cfg!(target_os = "windows") {
+    2800
+} else {
+    1400
+};
 pub const POST_FLASH_RECONNECT_ATTEMPTS: u32 = 16;
-pub const POST_FLASH_RECONNECT_RETRY_DELAY_MS: u64 =
-    if cfg!(target_os = "windows") { 700 } else { 500 };
-pub const POST_FLASH_OPEN_UNPLUG_GRACE_MS: u64 =
-    if cfg!(target_os = "windows") { 12000 } else { 8000 };
+pub const POST_FLASH_RECONNECT_RETRY_DELAY_MS: u64 = if cfg!(target_os = "windows") {
+    700
+} else {
+    500
+};
+pub const POST_FLASH_OPEN_UNPLUG_GRACE_MS: u64 = if cfg!(target_os = "windows") {
+    12000
+} else {
+    8000
+};
 pub const TRANSIENT_RECONNECT_ATTEMPTS: u32 = 12;
-pub const TRANSIENT_RECONNECT_DELAY_MS: u64 = if cfg!(target_os = "windows") { 500 } else { 400 };
+pub const TRANSIENT_RECONNECT_DELAY_MS: u64 = if cfg!(target_os = "windows") {
+    500
+} else {
+    400
+};
 pub const PORT_LIST_POLL_INTERVAL_MS: u64 = 250;
-pub const PORT_LIST_RECONNECT_MAX_WAIT_MS: u64 =
-    if cfg!(target_os = "windows") { 18000 } else { 12000 };
+pub const PORT_LIST_RECONNECT_MAX_WAIT_MS: u64 = if cfg!(target_os = "windows") {
+    18000
+} else {
+    12000
+};
 
 pub const ESP_RECONNECT_VENDOR_IDS: [&str; 3] = ["303A", "10C4", "1A86"];
 
@@ -100,8 +116,14 @@ pub fn list_status_devices() -> Result<Vec<StatusDevice>, String> {
         .into_iter()
         .filter(|d| {
             !d.path.is_empty()
-                && d.vendor_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false)
-                && d.product_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false)
+                && d.vendor_id
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+                && d.product_id
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
         })
         .map(|d| {
             let vid = d.vendor_id.clone().unwrap_or_default().to_uppercase();
@@ -148,7 +170,10 @@ pub fn format_device_name(device: &DeviceInfo) -> String {
 /// Port of `_normalizeUsbId`: strip 0x prefix, uppercase.
 pub fn normalize_usb_id(raw: &str) -> String {
     let s = raw.trim();
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
     s.to_uppercase()
 }
 
@@ -259,8 +284,10 @@ impl OpenPort {
             .timeout(Duration::from_millis(50))
             .open()
             .map_err(|e| e.to_string())?;
-        port.write_request_to_send(cfg.rts).map_err(|e| e.to_string())?;
-        port.write_data_terminal_ready(cfg.dtr).map_err(|e| e.to_string())?;
+        port.write_request_to_send(cfg.rts)
+            .map_err(|e| e.to_string())?;
+        port.write_data_terminal_ready(cfg.dtr)
+            .map_err(|e| e.to_string())?;
         Ok(OpenPort {
             inner: port,
             path: path.to_string(),
@@ -285,8 +312,12 @@ impl OpenPort {
     /// Live baud-rate change + re-apply rts/dtr. Port of `updateBaudrate`.
     pub fn update_baud(&mut self, baud: u32, rts: bool, dtr: bool) -> Result<(), String> {
         self.inner.set_baud_rate(baud).map_err(|e| e.to_string())?;
-        self.inner.write_request_to_send(rts).map_err(|e| e.to_string())?;
-        self.inner.write_data_terminal_ready(dtr).map_err(|e| e.to_string())?;
+        self.inner
+            .write_request_to_send(rts)
+            .map_err(|e| e.to_string())?;
+        self.inner
+            .write_data_terminal_ready(dtr)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 }

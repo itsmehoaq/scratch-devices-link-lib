@@ -57,10 +57,7 @@ impl Arduino {
         tools_path: &Path,
     ) -> Self {
         let arduino_path = tools_path.join("Arduino");
-        let firmware_dir = tools_path
-            .join("..")
-            .join("firmwares")
-            .join("arduino");
+        let firmware_dir = tools_path.join("..").join("firmwares").join("arduino");
 
         // Resolve per-platform fqbn object → string.
         let fqbn = match config.get("fqbn") {
@@ -80,11 +77,7 @@ impl Arduino {
         // projectPathName = `${fqbn.replace(:→_)}_project`.split('_')[0..3].join('_')
         let project_path_name = {
             let replaced = format!("{}_project", fqbn.replace(':', "_"));
-            replaced
-                .split('_')
-                .take(3)
-                .collect::<Vec<_>>()
-                .join("_")
+            replaced.split('_').take(3).collect::<Vec<_>>().join("_")
         };
 
         let config_file_path = user_data_path.join("arduino").join("arduino-cli.yaml");
@@ -163,7 +156,11 @@ impl Arduino {
 
     /// Port of `_applySourceTransforms`.
     fn apply_source_transforms(&self, code: &str) -> String {
-        let transforms = match self.config.get("sourceTransforms").and_then(|v| v.as_array()) {
+        let transforms = match self
+            .config
+            .get("sourceTransforms")
+            .and_then(|v| v.as_array())
+        {
             Some(t) => t,
             None => return code.to_string(),
         };
@@ -381,7 +378,11 @@ impl Arduino {
                 "__{}_H__",
                 lib_name
                     .chars()
-                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+                    .map(|c| if c.is_ascii_alphanumeric() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        '_'
+                    })
                     .collect::<String>()
             );
             let shim = format!(
@@ -390,7 +391,11 @@ impl Arduino {
             );
             if fs::write(&src_header, shim).is_ok() {
                 sendstd(
-                    &format!("{}[build] Generated compat header: {}\n", ansi::YELLOW_DARK, src_header.display()),
+                    &format!(
+                        "{}[build] Generated compat header: {}\n",
+                        ansi::YELLOW_DARK,
+                        src_header.display()
+                    ),
                     None,
                 );
             }
@@ -401,14 +406,18 @@ impl Arduino {
     fn build_compile_library_paths(&self) -> Vec<PathBuf> {
         let mut ordered = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let add = |p: &Path, ordered: &mut Vec<PathBuf>, seen: &mut std::collections::HashSet<PathBuf>| {
+        let add = |p: &Path,
+                   ordered: &mut Vec<PathBuf>,
+                   seen: &mut std::collections::HashSet<PathBuf>| {
             if !p.exists() {
                 return;
             }
             let abs = if p.is_absolute() {
                 p.to_path_buf()
             } else {
-                std::env::current_dir().map(|c| c.join(p)).unwrap_or_else(|_| p.to_path_buf())
+                std::env::current_dir()
+                    .map(|c| c.join(p))
+                    .unwrap_or_else(|_| p.to_path_buf())
             };
             if seen.insert(abs.clone()) {
                 ordered.push(abs);
@@ -492,7 +501,8 @@ impl Arduino {
             return Ok(());
         }
         if has_windify_audio {
-            fs::write(&partition_path, WINDIFY_ESP32_16MB_PARTITIONS_CSV).map_err(|e| e.to_string())?;
+            fs::write(&partition_path, WINDIFY_ESP32_16MB_PARTITIONS_CSV)
+                .map_err(|e| e.to_string())?;
             return Ok(());
         }
         if partition_path.exists() {
@@ -518,7 +528,10 @@ impl Arduino {
             ];
         }
         sendstd(
-            &format!("{}[build] Using 16 MB flash partition table (6.25 MB APP).\n", ansi::YELLOW_DARK),
+            &format!(
+                "{}[build] Using 16 MB flash partition table (6.25 MB APP).\n",
+                ansi::YELLOW_DARK
+            ),
             None,
         );
         vec![
@@ -530,7 +543,10 @@ impl Arduino {
     }
 
     fn cleanup_windify_audio_sketch_files(&self) {
-        let dirs = [self.code_folder_path.clone(), self.build_path.join("sketch")];
+        let dirs = [
+            self.code_folder_path.clone(),
+            self.build_path.join("sketch"),
+        ];
         for dir in dirs {
             if let Ok(entries) = fs::read_dir(&dir) {
                 for e in entries.filter_map(|e| e.ok()) {
@@ -625,7 +641,8 @@ impl Arduino {
         self.ensure_manual_library_compat_headers(&discovered, sendstd);
 
         let (sketch_main, payload_files) = Self::parse_upload_sketch_payload(code);
-        let transformed = self.sanitize_sketch_source(&self.apply_source_transforms(&sketch_main), sendstd);
+        let transformed =
+            self.sanitize_sketch_source(&self.apply_source_transforms(&sketch_main), sendstd);
         let (main, marker_files) = Self::extract_windify_extra_sketch_files(&transformed);
 
         let mut extra_files = marker_files;
@@ -639,7 +656,9 @@ impl Arduino {
         }
         let has_windify_audio = Self::has_windify_audio_clip_files(&extra_files);
         let has_at32_markers = main.contains("AT32_")
-            || main.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|t| t.starts_with("at32"));
+            || main
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|t| t.starts_with("at32"));
 
         self.cleanup_windify_audio_sketch_files();
         self.write_esp32_partition_table(has_windify_audio)?;
@@ -679,33 +698,55 @@ impl Arduino {
             if let Some(ws) = self.get_bundled_at32_ws2812b_library_path() {
                 if !extra_libs.contains(&ws) {
                     extra_libs.insert(0, ws.clone());
-                    sendstd(&format!("Inject AT32 WS2812B library: {}\n", ws.display()), None);
+                    sendstd(
+                        &format!("Inject AT32 WS2812B library: {}\n", ws.display()),
+                        None,
+                    );
                 }
             }
         }
         for lib in extra_libs.iter().rev() {
-            args.splice(3..3, ["--libraries".to_string(), lib.to_string_lossy().to_string()]);
+            args.splice(
+                3..3,
+                ["--libraries".to_string(), lib.to_string_lossy().to_string()],
+            );
             sendstd(&format!("Inject library: {}\n", lib.display()), None);
         }
 
         // sketchIdx = index of code folder path (recompute after splices).
         let sketch_path = self.code_folder_path.to_string_lossy().to_string();
-        let sketch_idx = args.iter().position(|a| *a == sketch_path).unwrap_or(args.len());
+        let sketch_idx = args
+            .iter()
+            .position(|a| *a == sketch_path)
+            .unwrap_or(args.len());
         let flash_props = self.esp32_flash_build_properties(has_windify_audio, sendstd);
         if !flash_props.is_empty() {
             args.splice(sketch_idx..sketch_idx, flash_props);
         }
 
-        if let Some(defines) = self.config.get("compilerDefines").and_then(|v| v.as_array()) {
+        if let Some(defines) = self
+            .config
+            .get("compilerDefines")
+            .and_then(|v| v.as_array())
+        {
             let flags: Vec<String> = defines
                 .iter()
                 .filter_map(|d| d.as_str())
                 .map(|d| d.trim())
                 .filter(|d| !d.is_empty())
-                .map(|d| if d.starts_with("-D") { d.to_string() } else { format!("-D{}", d) })
+                .map(|d| {
+                    if d.starts_with("-D") {
+                        d.to_string()
+                    } else {
+                        format!("-D{}", d)
+                    }
+                })
                 .collect();
             if !flags.is_empty() {
-                let sketch_idx = args.iter().position(|a| *a == sketch_path).unwrap_or(args.len());
+                let sketch_idx = args
+                    .iter()
+                    .position(|a| *a == sketch_path)
+                    .unwrap_or(args.len());
                 args.splice(
                     sketch_idx..sketch_idx,
                     [
@@ -717,7 +758,10 @@ impl Arduino {
         }
 
         if !self.arduino_cli_path.exists() {
-            return Err(format!("arduino-cli not found: {}", self.arduino_cli_path.display()));
+            return Err(format!(
+                "arduino-cli not found: {}",
+                self.arduino_cli_path.display()
+            ));
         }
 
         sendstd("Start building...\n", None);
@@ -843,14 +887,22 @@ impl Arduino {
         if !self.is_esp32_target() {
             return false;
         }
-        if let Some(b) = self.config.get("clearFirmwareBeforeUpload").and_then(|v| v.as_bool()) {
+        if let Some(b) = self
+            .config
+            .get("clearFirmwareBeforeUpload")
+            .and_then(|v| v.as_bool())
+        {
             return b;
         }
         true
     }
 
     fn resolve_esp32_esptool_path(&self) -> PathBuf {
-        let exe_name = if cfg!(windows) { "esptool.exe" } else { "esptool" };
+        let exe_name = if cfg!(windows) {
+            "esptool.exe"
+        } else {
+            "esptool"
+        };
         if let Some(explicit) = self.config.get("esptoolPath").and_then(|v| v.as_str()) {
             let p = PathBuf::from(explicit);
             if p.exists() {
@@ -883,9 +935,14 @@ impl Arduino {
 
     fn is_serial_port_open_error(text: &str) -> bool {
         let lower = text.to_lowercase();
-        ["could not open", "can't open", "cannot find the file specified", "no such file"]
-            .iter()
-            .any(|n| lower.contains(n))
+        [
+            "could not open",
+            "can't open",
+            "cannot find the file specified",
+            "no such file",
+        ]
+        .iter()
+        .any(|n| lower.contains(n))
             || (lower.contains("serial port ") && lower.contains(" not found"))
     }
 
@@ -906,7 +963,11 @@ impl Arduino {
             .config
             .get("espPostErasePortDelayMs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(if cfg!(target_os = "windows") { 1600 } else { 900 });
+            .unwrap_or(if cfg!(target_os = "windows") {
+                1600
+            } else {
+                900
+            });
         if delay_ms > 0 {
             std::thread::sleep(Duration::from_millis(delay_ms));
         }
@@ -917,18 +978,30 @@ impl Arduino {
         let allowed = self.allowed_esp_vids();
         let pref_upper = preferred.to_uppercase();
         let pref_com = serial::com_num(preferred);
-        let allow_low = self.config.get("allowLowComFallback").and_then(|v| v.as_bool()) == Some(true);
+        let allow_low = self
+            .config
+            .get("allowLowComFallback")
+            .and_then(|v| v.as_bool())
+            == Some(true);
 
         let mut matching: Vec<(String, String)> = ports
             .iter()
             .filter(|p| !p.path.is_empty())
-            .map(|p| (p.path.clone(), serial::normalize_usb_id(p.vendor_id.as_deref().unwrap_or(""))))
+            .map(|p| {
+                (
+                    p.path.clone(),
+                    serial::normalize_usb_id(p.vendor_id.as_deref().unwrap_or("")),
+                )
+            })
             .filter(|(_, vid)| !vid.is_empty() && allowed.contains(vid))
             .collect();
         if matching.is_empty() {
             return None;
         }
-        if let Some((path, _)) = matching.iter().find(|(p, _)| p.to_uppercase() == pref_upper) {
+        if let Some((path, _)) = matching
+            .iter()
+            .find(|(p, _)| p.to_uppercase() == pref_upper)
+        {
             return Some(path.clone());
         }
         if cfg!(target_os = "windows") && !allow_low && pref_com > 3 {
@@ -958,13 +1031,22 @@ impl Arduino {
         let normalized_current = current.to_uppercase();
         let allowed = self.allowed_esp_vids();
         let current_com = serial::com_num(current);
-        let allow_low = self.config.get("allowLowComFallback").and_then(|v| v.as_bool()) == Some(true);
+        let allow_low = self
+            .config
+            .get("allowLowComFallback")
+            .and_then(|v| v.as_bool())
+            == Some(true);
 
         let mut candidates: Vec<(String, String)> = ports
             .iter()
             .filter(|p| !p.path.is_empty())
             .filter(|p| p.path.to_uppercase() != normalized_current)
-            .map(|p| (p.path.clone(), serial::normalize_usb_id(p.vendor_id.as_deref().unwrap_or(""))))
+            .map(|p| {
+                (
+                    p.path.clone(),
+                    serial::normalize_usb_id(p.vendor_id.as_deref().unwrap_or("")),
+                )
+            })
             .filter(|(path, _)| {
                 if !cfg!(target_os = "windows") {
                     return true;
@@ -1025,7 +1107,11 @@ impl Arduino {
         let before = self.cfg_str("espBefore", "default_reset");
         let after = self.cfg_str("espAfter", "hard_reset");
         let low_baud: u64 = 115200;
-        let first_baud = self.config.get("espEraseBaudrate").and_then(|v| v.as_u64()).unwrap_or(460800);
+        let first_baud = self
+            .config
+            .get("espEraseBaudrate")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(460800);
 
         let run = |baud: u64, is_retry: bool, sendstd: &mut SendStd| -> Result<bool, String> {
             let args = vec![
@@ -1042,14 +1128,31 @@ impl Arduino {
                 "erase_flash".to_string(),
             ];
             if is_retry {
-                sendstd(&format!("{}[upload] Retrying firmware erase at {} baud...\n", ansi::YELLOW_DARK, baud), None);
+                sendstd(
+                    &format!(
+                        "{}[upload] Retrying firmware erase at {} baud...\n",
+                        ansi::YELLOW_DARK,
+                        baud
+                    ),
+                    None,
+                );
             } else {
-                sendstd(&format!("{}[upload] Clear old firmware before upload...\n", ansi::YELLOW_DARK), None);
+                sendstd(
+                    &format!(
+                        "{}[upload] Clear old firmware before upload...\n",
+                        ansi::YELLOW_DARK
+                    ),
+                    None,
+                );
             }
             let mut cmd = std::process::Command::new(&esptool);
-            cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+            cmd.args(&args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             configure_killable(&mut cmd);
-            let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn esptool: {}", e))?;
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to spawn esptool: {}", e))?;
             if let Some(out) = child.stdout.take() {
                 for line in BufReader::new(out).lines().map_while(Result::ok) {
                     sendstd(&format!("{}\n", line), None);
@@ -1065,12 +1168,18 @@ impl Arduino {
         };
 
         if run(first_baud, false, sendstd)? {
-            sendstd(&format!("{}[upload] Firmware erase done.\n", ansi::GREEN_DARK), None);
+            sendstd(
+                &format!("{}[upload] Firmware erase done.\n", ansi::GREEN_DARK),
+                None,
+            );
             return Ok(());
         }
         if first_baud > low_baud {
             if run(low_baud, true, sendstd)? {
-                sendstd(&format!("{}[upload] Firmware erase done.\n", ansi::GREEN_DARK), None);
+                sendstd(
+                    &format!("{}[upload] Firmware erase done.\n", ansi::GREEN_DARK),
+                    None,
+                );
                 return Ok(());
             }
         }
@@ -1078,7 +1187,11 @@ impl Arduino {
     }
 
     fn cfg_str<'a>(&'a self, key: &str, default: &'a str) -> String {
-        self.config.get(key).and_then(|v| v.as_str()).unwrap_or(default).to_string()
+        self.config
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or(default)
+            .to_string()
     }
 
     /// Port of `flash(firmwarePath)`. `firmware_path` None => sketch upload.
@@ -1096,7 +1209,9 @@ impl Arduino {
                             sendstd(
                                 &format!(
                                     "{}[upload] Port after chip erase: {}(was {})\n",
-                                    ansi::YELLOW_DARK, after, self.peripheral_path
+                                    ansi::YELLOW_DARK,
+                                    after,
+                                    self.peripheral_path
                                 ),
                                 None,
                             );
@@ -1114,7 +1229,11 @@ impl Arduino {
                 }
                 Err(e) => {
                     sendstd(
-                        &format!("{}[upload] Pre-erase failed, continue upload: {}\n", ansi::YELLOW_DARK, e),
+                        &format!(
+                            "{}[upload] Pre-erase failed, continue upload: {}\n",
+                            ansi::YELLOW_DARK,
+                            e
+                        ),
                         None,
                     );
                 }
@@ -1156,7 +1275,10 @@ impl Arduino {
         }
 
         if !self.arduino_cli_path.exists() {
-            return Err(format!("arduino-cli not found: {}", self.arduino_cli_path.display()));
+            return Err(format!(
+                "arduino-cli not found: {}",
+                self.arduino_cli_path.display()
+            ));
         }
 
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -1197,7 +1319,12 @@ impl Arduino {
             match self.resolve_fallback_serial_path(upload_port) {
                 Some(fallback) => {
                     sendstd(
-                        &format!("{}[upload] Port {} unavailable, retry on {}\n", ansi::YELLOW_DARK, upload_port, fallback),
+                        &format!(
+                            "{}[upload] Port {} unavailable, retry on {}\n",
+                            ansi::YELLOW_DARK,
+                            upload_port,
+                            fallback
+                        ),
                         None,
                     );
                     self.peripheral_path = fallback.clone();
@@ -1214,7 +1341,10 @@ impl Arduino {
     }
 
     /// Port of `flashRealtimeFirmware`.
-    pub fn flash_realtime_firmware(&mut self, sendstd: &mut SendStd) -> Result<UploadResult, String> {
+    pub fn flash_realtime_firmware(
+        &mut self,
+        sendstd: &mut SendStd,
+    ) -> Result<UploadResult, String> {
         let firmware = self.cfg_str("firmware", "");
         let path = self.firmware_dir.join(firmware);
         self.flash(Some(&path), sendstd)
@@ -1239,9 +1369,7 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
         return;
     }
     let _ = std::fs::create_dir_all(user_data_path.join("arduino"));
-    let cfg = user_data_path
-        .join("arduino")
-        .join("arduino-cli.yaml");
+    let cfg = user_data_path.join("arduino").join("arduino-cli.yaml");
     let cfg_str = cfg.to_string_lossy().to_string();
 
     run_cli_sync(&cli_path, &["config", "init", "--dest-file", &cfg_str]);
@@ -1252,21 +1380,58 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
     if let Ok(out) = out {
         let parsed: Value = serde_yaml::from_slice(&out.stdout).unwrap_or(Value::Null);
         let directories = parsed.get("directories");
-        let data = directories.and_then(|d| d.get("data")).and_then(|v| v.as_str());
+        let data = directories
+            .and_then(|d| d.get("data"))
+            .and_then(|v| v.as_str());
         let downloads = directories
             .and_then(|d| d.get("downloads"))
             .and_then(|v| v.as_str());
-        let user = directories.and_then(|d| d.get("user")).and_then(|v| v.as_str());
+        let user = directories
+            .and_then(|d| d.get("user"))
+            .and_then(|v| v.as_str());
         let arduino = arduino_path.to_string_lossy().to_string();
         let staging = arduino_path.join("staging").to_string_lossy().to_string();
         if data != Some(arduino.as_str())
             || downloads != Some(staging.as_str())
             || user != Some(arduino.as_str())
         {
-            tracing::info!("[link] arduino cli config not initialized — setting paths to {}", arduino);
-            run_cli_sync(&cli_path, &["config", "set", "directories.data", &arduino, "--config-file", &cfg_str]);
-            run_cli_sync(&cli_path, &["config", "set", "directories.downloads", &staging, "--config-file", &cfg_str]);
-            run_cli_sync(&cli_path, &["config", "set", "directories.user", &arduino, "--config-file", &cfg_str]);
+            tracing::info!(
+                "[link] arduino cli config not initialized — setting paths to {}",
+                arduino
+            );
+            run_cli_sync(
+                &cli_path,
+                &[
+                    "config",
+                    "set",
+                    "directories.data",
+                    &arduino,
+                    "--config-file",
+                    &cfg_str,
+                ],
+            );
+            run_cli_sync(
+                &cli_path,
+                &[
+                    "config",
+                    "set",
+                    "directories.downloads",
+                    &staging,
+                    "--config-file",
+                    &cfg_str,
+                ],
+            );
+            run_cli_sync(
+                &cli_path,
+                &[
+                    "config",
+                    "set",
+                    "directories.user",
+                    &arduino,
+                    "--config-file",
+                    &cfg_str,
+                ],
+            );
         }
     }
 }

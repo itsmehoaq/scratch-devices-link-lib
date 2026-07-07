@@ -177,7 +177,8 @@ impl SerialportSession {
             }
             Err(msg) => {
                 // reply with error using null id (parse failures have no id)
-                self.session.send_response(&Value::Null, Value::Null, json!(msg));
+                self.session
+                    .send_response(&Value::Null, Value::Null, json!(msg));
             }
         }
     }
@@ -185,22 +186,18 @@ impl SerialportSession {
     /// Port of the `didReceiveCall` switch.
     async fn did_receive_call(&mut self, method: &str, params: Value, id: Value) {
         match method {
-            "discover" => {
-                match self.discover(&params) {
-                    Ok(()) => self.session.send_response(&id, Value::Null, Value::Null),
-                    Err(e) => self.session.send_response(&id, Value::Null, json!(e)),
-                }
-            }
+            "discover" => match self.discover(&params) {
+                Ok(()) => self.session.send_response(&id, Value::Null, Value::Null),
+                Err(e) => self.session.send_response(&id, Value::Null, json!(e)),
+            },
             "stopDiscover" => {
                 self.stop_discover();
                 self.session.send_response(&id, Value::Null, Value::Null);
             }
-            "connect" => {
-                match self.connect(&params, false, false).await {
-                    Ok(()) => self.session.send_response(&id, Value::Null, Value::Null),
-                    Err(e) => self.session.send_response(&id, Value::Null, json!(e)),
-                }
-            }
+            "connect" => match self.connect(&params, false, false).await {
+                Ok(()) => self.session.send_response(&id, Value::Null, Value::Null),
+                Err(e) => self.session.send_response(&id, Value::Null, json!(e)),
+            },
             "disconnect" => {
                 let _ = self.disconnect(true).await;
                 self.session.send_response(&id, Value::Null, Value::Null);
@@ -255,7 +252,8 @@ impl SerialportSession {
                 self.session.send_response(&id, json!([]), Value::Null);
             }
             "pingMe" => {
-                self.session.send_response(&id, json!("willPing"), Value::Null);
+                self.session
+                    .send_response(&id, json!("willPing"), Value::Null);
                 // server→client request ping (fire-and-forget completion logged)
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.session.send_remote_request("ping", None, Some(tx));
@@ -266,7 +264,8 @@ impl SerialportSession {
                 });
             }
             _ => {
-                self.session.send_response(&id, Value::Null, json!("Method not found"));
+                self.session
+                    .send_response(&id, Value::Null, json!("Method not found"));
             }
         }
     }
@@ -311,7 +310,11 @@ impl SerialportSession {
         let allowed: Vec<String> = filters
             .get("pnpid")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let devices = serial::list_devices().unwrap_or_default();
@@ -327,13 +330,16 @@ impl SerialportSession {
                 current_paths.insert(device.path.clone());
                 let name = Self::format_discovered_name(device, &pnpid);
                 let payload = Self::build_discovery_payload(device, &pnpid, &name);
-                self.reported_peripherals.insert(device.path.clone(), device.clone());
+                self.reported_peripherals
+                    .insert(device.path.clone(), device.clone());
                 let signature = payload.to_string();
                 if self.reported_signatures.get(&device.path) == Some(&signature) {
                     continue;
                 }
-                self.reported_signatures.insert(device.path.clone(), signature);
-                self.session.send_notification("didDiscoverPeripheral", Some(payload));
+                self.reported_signatures
+                    .insert(device.path.clone(), signature);
+                self.session
+                    .send_notification("didDiscoverPeripheral", Some(payload));
             }
         }
         // prune stale signatures
@@ -356,7 +362,10 @@ impl SerialportSession {
             .clone()
             .or_else(|| device.manufacturer.clone())
             .or_else(|| device.serial_number.clone());
-        let base = mapped.map(|s| s.to_string()).or(friendly).unwrap_or_else(|| "Unknown device".to_string());
+        let base = mapped
+            .map(|s| s.to_string())
+            .or(friendly)
+            .unwrap_or_else(|| "Unknown device".to_string());
         format!("{} ({})", base, device.path)
     }
 
@@ -430,7 +439,11 @@ impl SerialportSession {
         let sn = device.serial_number.clone().unwrap_or_default();
         tracing::info!(
             "[serial] connecting to {} (VID:{}, PID:{}, mfr:{}, sn:{})",
-            device.path, vid, pid, mfr, sn
+            device.path,
+            vid,
+            pid,
+            mfr,
+            sn
         );
 
         // Clear old build artifacts when establishing a fresh connection.
@@ -440,11 +453,26 @@ impl SerialportSession {
 
         let cfg = params.get("peripheralConfig").and_then(|c| c.get("config"));
         let open_cfg = OpenConfig {
-            baud_rate: cfg.and_then(|c| c.get("baudRate")).and_then(|v| v.as_u64()).unwrap_or(115200) as u32,
-            data_bits: cfg.and_then(|c| c.get("dataBits")).and_then(|v| v.as_u64()).unwrap_or(8) as u8,
-            stop_bits: cfg.and_then(|c| c.get("stopBits")).and_then(|v| v.as_u64()).unwrap_or(1) as u8,
-            rts: cfg.and_then(|c| c.get("rts")).and_then(|v| v.as_bool()).unwrap_or(true),
-            dtr: cfg.and_then(|c| c.get("dtr")).and_then(|v| v.as_bool()).unwrap_or(true),
+            baud_rate: cfg
+                .and_then(|c| c.get("baudRate"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(115200) as u32,
+            data_bits: cfg
+                .and_then(|c| c.get("dataBits"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(8) as u8,
+            stop_bits: cfg
+                .and_then(|c| c.get("stopBits"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as u8,
+            rts: cfg
+                .and_then(|c| c.get("rts"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            dtr: cfg
+                .and_then(|c| c.get("dtr"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
         };
 
         let opened = match OpenPort::open(&device.path, &open_cfg) {
@@ -567,13 +595,20 @@ impl SerialportSession {
 
     fn notify_connect_open_failure(&mut self, msg: &str) {
         if msg.contains("Access denied") {
-            self.session.send_notification("connectError", Some(json!({ "message": "Access denied" })));
+            self.session
+                .send_notification("connectError", Some(json!({ "message": "Access denied" })));
         }
         if msg.contains("Permission denied") {
-            self.session.send_notification("connectError", Some(json!({ "message": "Permission denied" })));
+            self.session.send_notification(
+                "connectError",
+                Some(json!({ "message": "Permission denied" })),
+            );
         }
         if msg.contains("Unknown error code 31") {
-            self.session.send_notification("connectError", Some(json!({ "message": "Unknown error code 31" })));
+            self.session.send_notification(
+                "connectError",
+                Some(json!({ "message": "Unknown error code 31" })),
+            );
         }
         if msg.contains("Resource temporarily unavailable") || msg.contains("EAGAIN") {
             self.session.send_notification(
@@ -590,8 +625,10 @@ impl SerialportSession {
         self.unplug_closed_streak = 0;
         if self.is_read {
             let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-            self.session
-                .send_notification("onMessage", Some(json!({ "encoding": "base64", "message": b64 })));
+            self.session.send_notification(
+                "onMessage",
+                Some(json!({ "encoding": "base64", "message": b64 })),
+            );
         }
         if self.scan.is_some() {
             self.feed_scan_context(bytes);
@@ -629,7 +666,9 @@ impl SerialportSession {
                 (Some(s), Some(e)) if s < e => {
                     let candidate = &ctx.buffer[s..=e];
                     match serde_json::from_str::<Value>(candidate) {
-                        Ok(parsed) if parsed.get("devices").map(|d| d.is_array()).unwrap_or(false) => {
+                        Ok(parsed)
+                            if parsed.get("devices").map(|d| d.is_array()).unwrap_or(false) =>
+                        {
                             Some(parsed)
                         }
                         _ => None,
@@ -650,7 +689,11 @@ impl SerialportSession {
     }
 
     fn check_scan_timeout(&mut self) {
-        let timed_out = self.scan.as_ref().map(|c| Instant::now() >= c.deadline).unwrap_or(false);
+        let timed_out = self
+            .scan
+            .as_ref()
+            .map(|c| Instant::now() >= c.deadline)
+            .unwrap_or(false);
         if timed_out {
             let ctx = self.scan.take().unwrap();
             self.session.send_response(
@@ -669,10 +712,16 @@ impl SerialportSession {
             return Ok(0);
         }
         let message = params.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        let encoding = params.get("encoding").and_then(|v| v.as_str()).unwrap_or("utf8");
+        let encoding = params
+            .get("encoding")
+            .and_then(|v| v.as_str())
+            .unwrap_or("utf8");
         let buffer = decode_buffer(message, encoding)?;
         let handle = self.serial.as_ref().ok_or_else(|| "not open".to_string())?;
-        let mut guard = handle.port.lock().map_err(|_| "port lock poisoned".to_string())?;
+        let mut guard = handle
+            .port
+            .lock()
+            .map_err(|_| "port lock poisoned".to_string())?;
         let port = guard.as_mut().ok_or_else(|| "not open".to_string())?;
         port.write_all(&buffer)
             .map_err(|e| format!("Error while attempting to write: {}", e))
@@ -696,7 +745,9 @@ impl SerialportSession {
             .cloned();
         let config = match config {
             Some(c) => c,
-            None => return Err("Baud rate update skipped: device connection is not ready".to_string()),
+            None => {
+                return Err("Baud rate update skipped: device connection is not ready".to_string())
+            }
         };
         let baud = match params.get("baudRate").and_then(|v| v.as_u64()) {
             Some(b) => b as u32,
@@ -704,8 +755,13 @@ impl SerialportSession {
         };
         let rts = config.get("rts").and_then(|v| v.as_bool()).unwrap_or(true);
         let dtr = config.get("dtr").and_then(|v| v.as_bool()).unwrap_or(true);
-        let mut guard = handle.port.lock().map_err(|_| "port lock poisoned".to_string())?;
-        let port = guard.as_mut().ok_or_else(|| "Baud rate update skipped: serial port is not open".to_string())?;
+        let mut guard = handle
+            .port
+            .lock()
+            .map_err(|_| "port lock poisoned".to_string())?;
+        let port = guard
+            .as_mut()
+            .ok_or_else(|| "Baud rate update skipped: serial port is not open".to_string())?;
         // persist new baud into params
         if let Some(c) = self
             .peripheral_params
@@ -762,7 +818,14 @@ impl SerialportSession {
         let params = self.peripheral_params.clone();
         let result = self.do_transient_recover(params).await;
         if let Err(e) = result {
-            self.sendstd(&format!("{}[serialport] Connection recovery failed: {}\n", ansi::RED, e), None);
+            self.sendstd(
+                &format!(
+                    "{}[serialport] Connection recovery failed: {}\n",
+                    ansi::RED,
+                    e
+                ),
+                None,
+            );
             self.session.send_notification("peripheralUnplug", None);
         }
         self.recovering_transient = false;
@@ -770,7 +833,11 @@ impl SerialportSession {
 
     async fn do_transient_recover(&mut self, params: Option<Value>) -> Result<(), String> {
         let params = params.ok_or_else(|| "Missing reconnect params".to_string())?;
-        let path = params.get("peripheralId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let path = params
+            .get("peripheralId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let _ = self.disconnect(false).await;
         let mut last_err = "Failed to reconnect after transient close".to_string();
         for attempt in 0..serial::TRANSIENT_RECONNECT_ATTEMPTS {
@@ -780,7 +847,10 @@ impl SerialportSession {
             match self.connect(&params, true, true).await {
                 Ok(()) => {
                     self.sendstd(
-                        &format!("{}[serialport] Recovered connection after transient reset.\n", ansi::YELLOW_DARK),
+                        &format!(
+                            "{}[serialport] Recovered connection after transient reset.\n",
+                            ansi::YELLOW_DARK
+                        ),
                         None,
                     );
                     return Ok(());
@@ -788,7 +858,10 @@ impl SerialportSession {
                 Err(e) => {
                     last_err = e;
                     if attempt < serial::TRANSIENT_RECONNECT_ATTEMPTS - 1 {
-                        tokio::time::sleep(Duration::from_millis(serial::TRANSIENT_RECONNECT_DELAY_MS)).await;
+                        tokio::time::sleep(Duration::from_millis(
+                            serial::TRANSIENT_RECONNECT_DELAY_MS,
+                        ))
+                        .await;
                     }
                 }
             }
@@ -806,7 +879,8 @@ impl SerialportSession {
         .await;
         if let Ok(Ok(device)) = resolved {
             let resolved_path = device.path.clone();
-            self.reported_peripherals.insert(resolved_path.clone(), device);
+            self.reported_peripherals
+                .insert(resolved_path.clone(), device);
             if resolved_path != path {
                 if let Some(p) = self.peripheral_params.as_mut() {
                     p["peripheralId"] = json!(resolved_path.clone());
@@ -814,7 +888,9 @@ impl SerialportSession {
                 self.sendstd(
                     &format!(
                         "{}[serialport] Port re-enumerated as {} (was {}).\n",
-                        ansi::YELLOW_DARK, resolved_path, path
+                        ansi::YELLOW_DARK,
+                        resolved_path,
+                        path
                     ),
                     None,
                 );
@@ -831,13 +907,20 @@ impl SerialportSession {
     }
 
     async fn connect_after_flash_inner(&mut self) -> Result<(), String> {
-        tokio::time::sleep(Duration::from_millis(serial::POST_FLASH_RECONNECT_INITIAL_DELAY_MS)).await;
+        tokio::time::sleep(Duration::from_millis(
+            serial::POST_FLASH_RECONNECT_INITIAL_DELAY_MS,
+        ))
+        .await;
         let params = self.peripheral_params.clone();
         let params = match params {
             Some(p) => p,
             None => return Err("Missing reconnect params".to_string()),
         };
-        let path = params.get("peripheralId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let path = params
+            .get("peripheralId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let mut last_err = "reconnect after flash failed".to_string();
         for attempt in 0..serial::POST_FLASH_RECONNECT_ATTEMPTS {
             if !path.is_empty() {
@@ -848,7 +931,10 @@ impl SerialportSession {
                 Err(e) => {
                     last_err = e;
                     if attempt < serial::POST_FLASH_RECONNECT_ATTEMPTS - 1 {
-                        tokio::time::sleep(Duration::from_millis(serial::POST_FLASH_RECONNECT_RETRY_DELAY_MS)).await;
+                        tokio::time::sleep(Duration::from_millis(
+                            serial::POST_FLASH_RECONNECT_RETRY_DELAY_MS,
+                        ))
+                        .await;
                     }
                 }
             }
@@ -858,7 +944,13 @@ impl SerialportSession {
 
     fn resume_read_after_flash_reconnect(&mut self) {
         self.is_read = true;
-        self.sendstd(&format!("{}Serial log stream resumed after flash reconnect.\n", ansi::CLEAR), None);
+        self.sendstd(
+            &format!(
+                "{}Serial log stream resumed after flash reconnect.\n",
+                ansi::CLEAR
+            ),
+            None,
+        );
     }
 
     // ── upload paths ─────────────────────────────────────────────────────
@@ -877,19 +969,28 @@ impl SerialportSession {
     /// Port of `upload`.
     async fn upload(&mut self, params: &Value) {
         let message = params.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        let encoding = params.get("encoding").and_then(|v| v.as_str()).unwrap_or("utf8");
+        let encoding = params
+            .get("encoding")
+            .and_then(|v| v.as_str())
+            .unwrap_or("utf8");
         let config = params.get("config").cloned().unwrap_or(json!({}));
         let code = match decode_buffer(message, encoding) {
             Ok(b) => String::from_utf8_lossy(&b).to_string(),
             Err(e) => {
-                self.session.send_notification("uploadError", Some(json!({ "message": format!("{}{}", ansi::RED, e) })));
+                self.session.send_notification(
+                    "uploadError",
+                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
+                );
                 return;
             }
         };
         let path = match self.current_peripheral_path() {
             Some(p) => p,
             None => {
-                self.session.send_notification("uploadError", Some(json!({ "message": format!("{}no peripheral", ansi::RED) })));
+                self.session.send_notification(
+                    "uploadError",
+                    Some(json!({ "message": format!("{}no peripheral", ansi::RED) })),
+                );
                 return;
             }
         };
@@ -905,16 +1006,40 @@ impl SerialportSession {
 
         // Run the blocking compile in a worker thread; stream via the out sink.
         let build_sp = progress::Spinner::new("Compiling sketch…");
-        let build_res = run_arduino_build(out.clone(), &path, config.clone(), &user_data, &tools, &code, abort.clone()).await;
+        let build_res = run_arduino_build(
+            out.clone(),
+            &path,
+            config.clone(),
+            &user_data,
+            &tools,
+            &code,
+            abort.clone(),
+        )
+        .await;
         drop(build_sp);
 
         match build_res {
             Ok((UploadResult::Success, _tool_path)) => {
                 self.sendstd(&format!("{}Disconnect serial port\n", ansi::CLEAR), None);
                 let _ = self.disconnect(false).await;
-                self.sendstd(&format!("{}Disconnected successfully, flash program starting...\n", ansi::CLEAR), None);
+                self.sendstd(
+                    &format!(
+                        "{}Disconnected successfully, flash program starting...\n",
+                        ansi::CLEAR
+                    ),
+                    None,
+                );
                 let flash_sp = progress::Spinner::new("Flashing firmware…");
-                let flash_res = run_arduino_flash(out.clone(), &path, config.clone(), &user_data, &tools, None, abort.clone()).await;
+                let flash_res = run_arduino_flash(
+                    out.clone(),
+                    &path,
+                    config.clone(),
+                    &user_data,
+                    &tools,
+                    None,
+                    abort.clone(),
+                )
+                .await;
                 drop(flash_sp);
                 match flash_res {
                     Ok((flash_code, resolved_path)) => {
@@ -928,22 +1053,35 @@ impl SerialportSession {
                             Err(e) => {
                                 reconnect_sp.finish_warn(&format!("Reconnect failed: {}", e));
                                 self.sendstd(&format!("{}[serialport] Flash OK but serial reopen failed: {}. Reconnect manually.\n", ansi::YELLOW_DARK, e), None);
-                                self.session.send_notification("connectError", Some(json!({ "message": e })));
+                                self.session.send_notification(
+                                    "connectError",
+                                    Some(json!({ "message": e })),
+                                );
                             }
                         }
-                        self.session.send_notification("uploadSuccess", Some(json!({ "aborted": flash_code == UploadResult::Aborted })));
+                        self.session.send_notification(
+                            "uploadSuccess",
+                            Some(json!({ "aborted": flash_code == UploadResult::Aborted })),
+                        );
                     }
                     Err(e) => {
-                        self.session.send_notification("uploadError", Some(json!({ "message": format!("{}{}", ansi::RED, e) })));
+                        self.session.send_notification(
+                            "uploadError",
+                            Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
+                        );
                         self.session.send_notification("peripheralUnplug", None);
                     }
                 }
             }
             Ok((UploadResult::Aborted, _)) => {
-                self.session.send_notification("uploadSuccess", Some(json!({ "aborted": true })));
+                self.session
+                    .send_notification("uploadSuccess", Some(json!({ "aborted": true })));
             }
             Err(e) => {
-                self.session.send_notification("uploadError", Some(json!({ "message": format!("{}{}", ansi::RED, e) })));
+                self.session.send_notification(
+                    "uploadError",
+                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
+                );
             }
         }
 
@@ -958,7 +1096,10 @@ impl SerialportSession {
         let path = match self.current_peripheral_path() {
             Some(p) => p,
             None => {
-                self.session.send_notification("uploadError", Some(json!({ "message": format!("{}no peripheral", ansi::RED) })));
+                self.session.send_notification(
+                    "uploadError",
+                    Some(json!({ "message": format!("{}no peripheral", ansi::RED) })),
+                );
                 return;
             }
         };
@@ -972,11 +1113,29 @@ impl SerialportSession {
 
         self.sendstd(&format!("{}Disconnect serial port\n", ansi::CLEAR), None);
         let _ = self.disconnect(false).await;
-        self.sendstd(&format!("{}Disconnected successfully, flash program starting...\n", ansi::CLEAR), None);
+        self.sendstd(
+            &format!(
+                "{}Disconnected successfully, flash program starting...\n",
+                ansi::CLEAR
+            ),
+            None,
+        );
 
-        let firmware = config.get("firmware").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let firmware = config
+            .get("firmware")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let flash_sp = progress::Spinner::new("Flashing firmware…");
-        let flash_res = run_arduino_flash_firmware(out.clone(), &path, config.clone(), &user_data, &tools, firmware, abort.clone()).await;
+        let flash_res = run_arduino_flash_firmware(
+            out.clone(),
+            &path,
+            config.clone(),
+            &user_data,
+            &tools,
+            firmware,
+            abort.clone(),
+        )
+        .await;
         drop(flash_sp);
         match flash_res {
             Ok((flash_code, resolved_path)) => {
@@ -989,13 +1148,20 @@ impl SerialportSession {
                     }
                     Err(e) => {
                         reconnect_sp.finish_warn(&format!("Reconnect failed: {}", e));
-                        self.session.send_notification("connectError", Some(json!({ "message": e })));
+                        self.session
+                            .send_notification("connectError", Some(json!({ "message": e })));
                     }
                 }
-                self.session.send_notification("uploadSuccess", Some(json!({ "aborted": flash_code == UploadResult::Aborted })));
+                self.session.send_notification(
+                    "uploadSuccess",
+                    Some(json!({ "aborted": flash_code == UploadResult::Aborted })),
+                );
             }
             Err(e) => {
-                self.session.send_notification("uploadError", Some(json!({ "message": format!("{}{}", ansi::RED, e) })));
+                self.session.send_notification(
+                    "uploadError",
+                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
+                );
             }
         }
         self.emit_set_upload_abort_enabled(false);
@@ -1017,7 +1183,11 @@ impl SerialportSession {
         };
         // drop pending scan
         if let Some(ctx) = self.scan.take() {
-            self.session.send_response(&ctx.responder, Value::Null, json!("Scan aborted: ESP32 flash starting"));
+            self.session.send_response(
+                &ctx.responder,
+                Value::Null,
+                json!("Scan aborted: ESP32 flash starting"),
+            );
         }
 
         self.emit_set_upload_abort_enabled(true);
@@ -1030,13 +1200,31 @@ impl SerialportSession {
 
         self.sendstd(&format!("{}Disconnect serial port\n", ansi::CLEAR), None);
         let _ = self.disconnect(false).await;
-        self.sendstd(&format!("{}Disconnected successfully, ESP32 flash starting...\n", ansi::CLEAR), None);
+        self.sendstd(
+            &format!(
+                "{}Disconnected successfully, ESP32 flash starting...\n",
+                ansi::CLEAR
+            ),
+            None,
+        );
 
         // bins = params.bins || params
-        let bins = params.get("bins").cloned().unwrap_or_else(|| params.clone());
+        let bins = params
+            .get("bins")
+            .cloned()
+            .unwrap_or_else(|| params.clone());
         let cfg = params.clone();
         let flash_sp = progress::Spinner::new("Flashing ESP32…");
-        let flash_res = run_esp32_flash(out.clone(), &path, cfg, &user_data, &tools, bins, abort.clone()).await;
+        let flash_res = run_esp32_flash(
+            out.clone(),
+            &path,
+            cfg,
+            &user_data,
+            &tools,
+            bins,
+            abort.clone(),
+        )
+        .await;
         drop(flash_sp);
         match flash_res {
             Ok(flash_code) => {
@@ -1048,17 +1236,29 @@ impl SerialportSession {
                     }
                     Err(e) => {
                         reconnect_sp.finish_warn(&format!("Reconnect failed: {}", e));
-                        self.sendstd(&format!("{}[esp32] reconnect after flash failed: {}\n", ansi::YELLOW_DARK, e), None);
+                        self.sendstd(
+                            &format!(
+                                "{}[esp32] reconnect after flash failed: {}\n",
+                                ansi::YELLOW_DARK,
+                                e
+                            ),
+                            None,
+                        );
                         self.session.send_notification("peripheralUnplug", None);
                     }
                 }
                 self.session.send_notification(
                     "uploadSuccess",
-                    Some(json!({ "aborted": flash_code == UploadResult::Aborted, "kind": "esp32" })),
+                    Some(
+                        json!({ "aborted": flash_code == UploadResult::Aborted, "kind": "esp32" }),
+                    ),
                 );
             }
             Err(e) => {
-                self.session.send_notification("uploadError", Some(json!({ "message": format!("{}{}", ansi::RED, e) })));
+                self.session.send_notification(
+                    "uploadError",
+                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
+                );
                 self.session.send_notification("peripheralUnplug", None);
             }
         }
@@ -1072,7 +1272,8 @@ impl SerialportSession {
         if resolved_path.is_empty() || self.peripheral_params.is_none() {
             return;
         }
-        self.refresh_reported_peripheral_by_path(resolved_path).await;
+        self.refresh_reported_peripheral_by_path(resolved_path)
+            .await;
     }
 
     fn abort_upload(&mut self) {
@@ -1089,8 +1290,14 @@ impl SerialportSession {
         if self.scan.is_some() {
             return Err("scanDevices already in progress".to_string());
         }
-        let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("scan");
-        let terminator = params.get("terminator").and_then(|v| v.as_str()).unwrap_or("\n");
+        let command = params
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("scan");
+        let terminator = params
+            .get("terminator")
+            .and_then(|v| v.as_str())
+            .unwrap_or("\n");
         let timeout_ms = params
             .get("timeoutMs")
             .and_then(|v| v.as_u64())
@@ -1106,8 +1313,11 @@ impl SerialportSession {
         let payload = format!("{}{}", command, terminator);
         if let Err(e) = self.write(&json!({ "encoding": "utf8", "message": payload })) {
             if let Some(ctx) = self.scan.take() {
-                self.session
-                    .send_response(&ctx.responder, Value::Null, json!(format!("scan write failed: {}", e)));
+                self.session.send_response(
+                    &ctx.responder,
+                    Value::Null,
+                    json!(format!("scan write failed: {}", e)),
+                );
             }
         }
         Ok(())
@@ -1124,13 +1334,15 @@ impl SerialportSession {
         if let Some(p) = progress {
             payload["progress"] = json!(p);
         }
-        self.session.send_notification("uploadStdout", Some(payload));
+        self.session
+            .send_notification("uploadStdout", Some(payload));
     }
 
     /// Port of `dispose`. Serial cleanup happens here, never inline.
     fn dispose(&mut self) {
         if let Some(ctx) = self.scan.take() {
-            self.session.send_response(&ctx.responder, Value::Null, json!("Session disposed"));
+            self.session
+                .send_response(&ctx.responder, Value::Null, json!("Session disposed"));
         }
         if let Some(handle) = self.serial.take() {
             handle.stop.store(true, Ordering::Relaxed);

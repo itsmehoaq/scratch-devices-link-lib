@@ -78,10 +78,7 @@ impl DownloadBar {
 
     pub fn finish(&self, msg: &str) {
         if let Some(b) = &self.bar {
-            b.set_style(
-                ProgressStyle::with_template("{spinner:.green} {msg}")
-                    .unwrap(),
-            );
+            b.set_style(ProgressStyle::with_template("{spinner:.green} {msg}").unwrap());
             b.finish_with_message(msg.to_string());
         } else {
             tracing::info!("[download] {msg}");
@@ -90,10 +87,7 @@ impl DownloadBar {
 
     pub fn abandon(&self, msg: &str) {
         if let Some(b) = &self.bar {
-            b.set_style(
-                ProgressStyle::with_template("{spinner:.red} {msg}")
-                    .unwrap(),
-            );
+            b.set_style(ProgressStyle::with_template("{spinner:.red} {msg}").unwrap());
             b.finish_with_message(msg.to_string());
         } else {
             tracing::error!("[download] {msg}");
@@ -140,10 +134,7 @@ impl Spinner {
 
     pub fn finish_ok(&self, msg: &str) {
         if let Some(b) = &self.bar {
-            b.set_style(
-                ProgressStyle::with_template("{spinner:.green} {msg}")
-                    .unwrap(),
-            );
+            b.set_style(ProgressStyle::with_template("{spinner:.green} {msg}").unwrap());
             b.finish_with_message(msg.to_string());
         } else {
             tracing::info!("[link] ✓ {msg}");
@@ -152,10 +143,7 @@ impl Spinner {
 
     pub fn finish_warn(&self, msg: &str) {
         if let Some(b) = &self.bar {
-            b.set_style(
-                ProgressStyle::with_template("{spinner:.yellow} {msg}")
-                    .unwrap(),
-            );
+            b.set_style(ProgressStyle::with_template("{spinner:.yellow} {msg}").unwrap());
             b.finish_with_message(msg.to_string());
         } else {
             tracing::warn!("[link] {msg}");
@@ -164,10 +152,7 @@ impl Spinner {
 
     pub fn finish_err(&self, msg: &str) {
         if let Some(b) = &self.bar {
-            b.set_style(
-                ProgressStyle::with_template("{spinner:.red} {msg}")
-                    .unwrap(),
-            );
+            b.set_style(ProgressStyle::with_template("{spinner:.red} {msg}").unwrap());
             b.finish_with_message(msg.to_string());
         } else {
             tracing::error!("[link] {msg}");

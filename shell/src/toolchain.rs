@@ -33,10 +33,7 @@ pub fn check_toolchain(tools_path: &Path) -> (bool, PathBuf) {
 /// Download and extract the pre-packaged tools archive (arduino-cli + ESP32
 /// core + AVR core) from the GitHub Tools release using 7zr. Reports progress
 /// via the `report` callback. Calls `report` with phases: downloading-tools | done
-pub async fn setup_toolchain(
-    tools_path: &Path,
-    report: ProgressFn,
-) -> Result<(), String> {
+pub async fn setup_toolchain(tools_path: &Path, report: ProgressFn) -> Result<(), String> {
     let phase = |phase: &str, progress: u8| {
         report(SetupProgress {
             phase: phase.to_string(),

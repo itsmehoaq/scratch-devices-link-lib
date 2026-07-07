@@ -34,7 +34,11 @@ serialport = "4"
 # HTTP client (toolchain download). ureq kept for the synchronous 2s tray poll thread.
 reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 ureq = { version = "2.10", features = ["json"] }
-which = "7"
+
+# Pure-Rust 7z extraction for the toolchain archive. Supports the modern
+# LZMA2 + Delta method used by the release .7z — no external 7zr/7-Zip needed.
+sevenz-rust2 = { version = "0.21", default-features = false, features = ["util"] }
+sha2 = "0.10"
 
 # Misc
 base64 = "0.22"

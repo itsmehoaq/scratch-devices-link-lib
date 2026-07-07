@@ -132,12 +132,16 @@ async fn http_handler(
             .get("access-control-request-headers")
             .cloned()
             .unwrap_or_else(|| HeaderValue::from_static("*"));
-        resp.headers_mut().insert("Access-Control-Allow-Headers", echo);
+        resp.headers_mut()
+            .insert("Access-Control-Allow-Headers", echo);
         return resp;
     }
 
     if method == Method::HEAD && path == "/" {
-        let mut resp = Response::builder().status(StatusCode::OK).body(Body::empty()).unwrap();
+        let mut resp = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
         pna_headers(resp.headers_mut());
         return resp;
     }
@@ -208,9 +212,7 @@ fn build_router(app: Arc<AppState>) -> Router {
     for route in ws::SERIALPORT_ROUTES {
         router = router.route(route, get(ws::ws_handler));
     }
-    router
-        .fallback(any(http_handler))
-        .with_state(app)
+    router.fallback(any(http_handler)).with_state(app)
 }
 
 /// Health check used for EADDRINUSE same-server detection. Port of `isSameServer`.
@@ -240,7 +242,9 @@ fn kill_stale_instances(port: u16) {
                 if let Ok(pid) = s.trim().parse::<u32>() {
                     if pid != own_pid {
                         tracing::warn!("[link] killing pid {} on port {}", pid, port);
-                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
                     }
                 }
             }
@@ -250,7 +254,10 @@ fn kill_stale_instances(port: u16) {
     #[cfg(windows)]
     {
         // Kill whatever is listening on the port (old server instance).
-        if let Ok(o) = std::process::Command::new("netstat").args(["-ano"]).output() {
+        if let Ok(o) = std::process::Command::new("netstat")
+            .args(["-ano"])
+            .output()
+        {
             let needle = format!(":{} ", port);
             for line in String::from_utf8_lossy(&o.stdout).lines() {
                 if line.contains(&needle) && line.to_uppercase().contains("LISTENING") {
@@ -283,10 +290,7 @@ pub async fn start(app: Arc<AppState>) -> Result<(), String> {
     for attempt in 0..10u32 {
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
-                tracing::info!(
-                    "[link] server listening on http://{}",
-                    addr
-                );
+                tracing::info!("[link] server listening on http://{}", addr);
                 let router = build_router(app.clone());
                 axum::serve(listener, router)
                     .await
@@ -295,15 +299,9 @@ pub async fn start(app: Arc<AppState>) -> Result<(), String> {
             }
             Err(e) => {
                 if attempt == 9 {
-                    return Err(format!(
-                        "port {} still in use after 5 s: {}",
-                        app.port, e
-                    ));
+                    return Err(format!("port {} still in use after 5 s: {}", app.port, e));
                 }
-                tracing::warn!(
-                    "[link] port {} busy, retry {}/10…",
-                    app.port, attempt + 1
-                );
+                tracing::warn!("[link] port {} busy, retry {}/10…", app.port, attempt + 1);
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }

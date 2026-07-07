@@ -67,7 +67,8 @@ struct TrayState {
 
 impl TrayState {
     fn from_response(resp: &StatusResponse) -> Self {
-        let status_label = if let Some(phase) = resp.setup_phase.as_deref().filter(|p| *p != "done") {
+        let status_label = if let Some(phase) = resp.setup_phase.as_deref().filter(|p| *p != "done")
+        {
             let label = match phase {
                 "downloading-cli" => "Downloading arduino-cli",
                 "extracting" => "Extracting tools",
@@ -82,7 +83,11 @@ impl TrayState {
             };
             format!("{} ({}%)", label, resp.setup_progress)
         } else if resp.ready {
-            let host = if resp.host.is_empty() { "127.0.0.1" } else { &resp.host };
+            let host = if resp.host.is_empty() {
+                "127.0.0.1"
+            } else {
+                &resp.host
+            };
             let port = if resp.port == 0 { 11337 } else { resp.port };
             format!("Running on http://{}:{}", host, port)
         } else {
@@ -109,8 +114,7 @@ enum UserEvent {
 
 /// Return current local time as "HH:MM:SS" suitable for log prefixes.
 pub fn log_timestamp() -> String {
-    let now = time::OffsetDateTime::now_local()
-        .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
     now.format(&format_description::parse_borrowed::<2>("[hour]:[minute]:[second]").unwrap())
         .unwrap_or_else(|_| String::new())
 }
@@ -150,7 +154,9 @@ fn show_console_log(log: &std::path::Path) {
                 "tell application \"Terminal\" to do script \"tail -f '{}'\"",
                 s
             );
-            let _ = std::process::Command::new("osascript").args(["-e", &script]).spawn();
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .spawn();
         }
     }
     #[cfg(target_os = "windows")]
@@ -195,7 +201,9 @@ fn start_runtime() {
                     }
                 }
             } else {
-                tracing::info!("[link] arduino-cli not found — downloading toolchain in background…");
+                tracing::info!(
+                    "[link] arduino-cli not found — downloading toolchain in background…"
+                );
                 app.set_setup_phase(Some("downloading-cli".to_string()));
                 app.set_setup_progress(0);
                 let app_setup = app.clone();
@@ -204,7 +212,11 @@ fn start_runtime() {
                     let app_for_cb = app_setup.clone();
                     let report_fn: toolchain::ProgressFn =
                         Arc::new(move |p: toolchain::SetupProgress| {
-                            let phase = if p.phase == "done" { None } else { Some(p.phase.clone()) };
+                            let phase = if p.phase == "done" {
+                                None
+                            } else {
+                                Some(p.phase.clone())
+                            };
                             app_for_cb.set_setup_phase(phase);
                             app_for_cb.set_setup_progress(p.progress);
                             tracing::info!("[link] toolchain setup: {} {}%", p.phase, p.progress);
@@ -215,7 +227,10 @@ fn start_runtime() {
                         app_setup.set_setup_phase(Some("error".to_string()));
                     } else {
                         // CLI environment init after successful toolchain setup.
-                        upload::arduino::init_cli_environment(&tools_setup, &app_setup.user_data_path);
+                        upload::arduino::init_cli_environment(
+                            &tools_setup,
+                            &app_setup.user_data_path,
+                        );
                     }
                 });
             }
@@ -235,8 +250,7 @@ fn start_runtime() {
 
 fn main() {
     // Logging to stderr with local HH:MM:SS timestamps.
-    let offset = time::UtcOffset::current_local_offset()
-        .unwrap_or(time::UtcOffset::UTC);
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let fmt = format_description::parse_borrowed::<2>("[hour]:[minute]:[second]")
         .expect("valid time format");
     let timer = OffsetTime::new(offset, fmt);

@@ -17,8 +17,10 @@ fn main() {
         // windres produces a GNU-coff .o that the linker accepts directly.
         let result = Command::new("windres")
             .arg(&rc_file)
-            .arg("-O").arg("coff")
-            .arg("-o").arg(&obj)
+            .arg("-O")
+            .arg("coff")
+            .arg("-o")
+            .arg(&obj)
             .status();
 
         let ok = result.map(|s| s.success()).unwrap_or(false);
@@ -26,13 +28,16 @@ fn main() {
             // fallback: rc.exe (MSVC) produces .res which we can convert with cvtres
             let res = out_dir.join("icon.res");
             let _ = Command::new("rc.exe")
-                .arg("/fo").arg(&res)
+                .arg("/fo")
+                .arg(&res)
                 .arg(&rc_file)
                 .status();
             // cvtres converts .res → .o for the GNU linker
             let _ = Command::new("cvtres.exe")
-                .arg("/machine:").arg("x64")
-                .arg("/out:").arg(&obj)
+                .arg("/machine:")
+                .arg("x64")
+                .arg("/out:")
+                .arg(&obj)
                 .arg(&res)
                 .status();
         }

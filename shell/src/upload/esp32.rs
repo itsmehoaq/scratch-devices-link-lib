@@ -56,7 +56,11 @@ impl Esp32 {
 
     /// Port of `_resolveEsptoolBinary`.
     fn resolve_esptool_binary(&self) -> PathBuf {
-        let exe_name = if cfg!(windows) { "esptool.exe" } else { "esptool" };
+        let exe_name = if cfg!(windows) {
+            "esptool.exe"
+        } else {
+            "esptool"
+        };
         if let Some(explicit) = self.config.get("esptoolPath").and_then(|v| v.as_str()) {
             let p = PathBuf::from(explicit);
             if p.exists() {
@@ -152,7 +156,10 @@ impl Esp32 {
     }
 
     fn cfg_u64(&self, key: &str, default: u64) -> u64 {
-        self.config.get(key).and_then(|v| v.as_u64()).unwrap_or(default)
+        self.config
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default)
     }
 
     fn addr(&self, key: &str, default: u64) -> u64 {
@@ -178,7 +185,12 @@ impl Esp32 {
             self.cfg_str("after", "hard_reset"),
             "write_flash".into(),
         ];
-        if self.config.get("eraseAll").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if self
+            .config
+            .get("eraseAll")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             args.push("--erase-all".into());
         }
         args.push("--flash_mode".into());
@@ -220,8 +232,11 @@ impl Esp32 {
             "Wrong boot mode",
             "Invalid head of packet",
         ];
-        const OK_LINES: [&str; 3] =
-            ["Hash of data verified", "Hard resetting via RTS pin", "Leaving..."];
+        const OK_LINES: [&str; 3] = [
+            "Hash of data verified",
+            "Hard resetting via RTS pin",
+            "Leaving...",
+        ];
         if ERR_HINTS.iter().any(|h| text.contains(h)) {
             format!("{}{}", ansi::RED, text)
         } else if OK_LINES.iter().any(|h| text.contains(h)) {
@@ -245,12 +260,19 @@ impl Esp32 {
             .and_then(|n| n.to_str())
             .unwrap_or("esptool");
         sendstd(
-            &format!("{}[esp32] esptool {} {}\n", ansi::CLEAR, exe_label, args.join(" ")),
+            &format!(
+                "{}[esp32] esptool {} {}\n",
+                ansi::CLEAR,
+                exe_label,
+                args.join(" ")
+            ),
             None,
         );
 
         let mut cmd = std::process::Command::new(&self.esptool_path);
-        cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         configure_killable(&mut cmd);
 
         let mut child = cmd
