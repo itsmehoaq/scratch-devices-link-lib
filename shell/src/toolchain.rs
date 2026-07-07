@@ -4,7 +4,6 @@
 //!
 //! If pre-shipped tools are already present on disk, the download is skipped.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -38,8 +37,6 @@ pub async fn setup_toolchain(
     tools_path: &Path,
     report: ProgressFn,
 ) -> Result<(), String> {
-    let cli_path = tools_path.join("Arduino").join(CLI_FILE);
-
     let phase = |phase: &str, progress: u8| {
         report(SetupProgress {
             phase: phase.to_string(),
@@ -57,15 +54,23 @@ pub async fn setup_toolchain(
     phase("downloading-tools", 100);
 
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if cli_path.exists() {
-            let mut perms = fs::metadata(cli_path).map_err(|e| e.to_string())?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(cli_path, perms).map_err(|e| e.to_string())?;
-        }
-    }
+    chmod_cli(tools_path);
 
     phase("done", 100);
     Ok(())
+}
+
+#[cfg(unix)]
+fn chmod_cli(tools_path: &Path) {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    let cli_path = tools_path.join("Arduino").join(CLI_FILE);
+    if !cli_path.exists() {
+        return;
+    }
+    if let Ok(meta) = fs::metadata(&cli_path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o755);
+        let _ = fs::set_permissions(&cli_path, perms);
+    }
 }
