@@ -9,15 +9,18 @@
 //! cannot be tampered with at runtime.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use sha2::{Digest, Sha256};
+use std::io::IsTerminal;
 
 #[cfg(target_os = "macos")]
-const TOOLS_7Z: &str = "tools-mac.7z";
+pub const TOOLS_7Z: &str = "tools-mac.7z";
 #[cfg(not(target_os = "macos"))]
-const TOOLS_7Z: &str = "tools.7z";
+pub const TOOLS_7Z: &str = "tools.7z";
 
-const ASSET_BASE: &str =
+pub const ASSET_BASE: &str =
     "https://github.com/Kannoki/scratch-devices-link-lib/releases/download/Tools/";
 
 /// Expected SHA256 of the matching archive, pinned at compile time. Used to
@@ -40,14 +43,51 @@ pub enum ToolsStatus {
     Failed,
 }
 
-/// Check whether `tools_path` already has arduino-cli, and if not, download
-/// the appropriate `.7z` from the GitHub Tools release, verify its SHA256,
-/// and extract it via the in-process 7z decoder.
-///
-/// The function is intentionally synchronous so it can be called before the
-/// event loop starts. On a fast connection the download is a few seconds;
-/// the tray UI is already visible by then.
-pub fn ensure_tools(tools_path: &Path) -> ToolsStatus {
+/// Thin wrapper so the caller (an async context) can pass a bar into this sync fn.
+pub struct DownloadProgress {
+    bar: Option<ProgressBar>,
+}
+
+impl DownloadProgress {
+    pub fn new(total_bytes: u64) -> Self {
+        if !std::io::stderr().is_terminal() {
+            return Self { bar: None };
+        }
+        let bar = ProgressBar::with_draw_target(Some(total_bytes), ProgressDrawTarget::stderr());
+        bar.set_style(
+            ProgressStyle::with_template(
+                "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+            )
+            .unwrap()
+            .progress_chars("#>-"),
+        );
+        bar.enable_steady_tick(Duration::from_millis(120));
+        Self { bar: Some(bar) }
+    }
+
+    pub fn bar(&self) -> Option<&ProgressBar> {
+        self.bar.as_ref()
+    }
+
+    pub fn finish_ok(&self, msg: &str) {
+        if let Some(b) = &self.bar {
+            b.finish_with_message(msg.to_string());
+        } else {
+            tracing::info!("[tools] {msg}");
+        }
+    }
+
+    pub fn abandon(&self, msg: &str) {
+        if let Some(b) = &self.bar {
+            b.abandon_with_message(msg.to_string());
+        } else {
+            tracing::error!("[tools] {msg}");
+        }
+    }
+}
+
+/// Check whether the CLI binary already exists under tools_path.
+pub fn ensure_tools(tools_path: &Path, dl: &DownloadProgress) -> ToolsStatus {
     let cli = tools_path.join("Arduino").join(crate::toolchain::CLI_FILE);
     if cli.exists() {
         return ToolsStatus::Present;
@@ -55,20 +95,20 @@ pub fn ensure_tools(tools_path: &Path) -> ToolsStatus {
 
     tracing::info!(
         target: "future-academy-tray",
-        "[tools] not found at {} — downloading from GitHub release Tools",
+        "[tools] not found at {} -- downloading from GitHub release Tools",
         tools_path.display()
     );
 
-    match download_verify_and_extract(tools_path) {
+    match download_verify_and_extract(tools_path, dl.bar()) {
         Ok(()) => ToolsStatus::Downloaded,
         Err(e) => {
-            tracing::error!(target: "future-academy-tray", "[tools] download failed: {e}");
+            dl.abandon(&e);
             ToolsStatus::Failed
         }
     }
 }
 
-fn download_verify_and_extract(tools_path: &Path) -> Result<(), String> {
+fn download_verify_and_extract(tools_path: &Path, bar: Option<&ProgressBar>) -> Result<(), String> {
     let asset_name = TOOLS_7Z;
     let download_url = format!("{ASSET_BASE}{asset_name}");
 
@@ -114,12 +154,19 @@ fn download_verify_and_extract(tools_path: &Path) -> Result<(), String> {
             .map_err(|e| format!("write archive: {e}"))?;
         hasher.update(&buf[..n]);
         received += n as u64;
+        // Update progress bar if provided; silently ignore if the bar is None
+        // (headless / non-TTY environments).
+        if let Some(b) = bar {
+            b.inc(n as u64);
+        }
         if let Some(total) = total {
             let pct = (received as f64 / total as f64) * 100.0;
             tracing::debug!(
                 target: "future-academy-tray",
                 "[tools] downloaded {}/{} ({:.0}%)",
-                received, total, pct
+                received,
+                total,
+                pct
             );
         }
     }
@@ -127,28 +174,33 @@ fn download_verify_and_extract(tools_path: &Path) -> Result<(), String> {
 
     // Verify the archive against the compile-time pinned SHA256. A mismatch
     // usually means a truncated download or a release that changed since this
-    // binary was built — fail loudly rather than extract garbage.
+    // binary was built -- fail loudly rather than extract garbage.
     let digest = hasher.finalize();
     let actual_hex = hex::encode(digest);
     let expected_hex = TOOLS_SHA256_HEX;
     if !actual_hex.eq_ignore_ascii_case(expected_hex) {
         let _ = std::fs::remove_file(&dest);
         return Err(format!(
-            "sha256 mismatch for {asset_name}: expected {expected_hex}, got {actual_hex}"
+            "sha256 mismatch for {}: expected {}, got {}",
+            asset_name, expected_hex, actual_hex
         ));
     }
+    tracing::info!(target: "future-academy-tray", "[tools] sha256 ok ({})", actual_hex);
+
     tracing::info!(
         target: "future-academy-tray",
-        "[tools] sha256 ok ({actual_hex})"
+        "[tools] extracting {dest:?} -> {tools_path:?}"
     );
-
-    tracing::info!(target: "future-academy-tray", "[tools] extracting {dest:?} -> {tools_path:?}");
     extract_archive(&dest, tools_path)?;
 
     // Remove the archive to save disk space.
     let _ = std::fs::remove_file(&dest);
 
-    tracing::info!(target: "future-academy-tray", "[tools] ready at {}", tools_path.display());
+    tracing::info!(
+        target: "future-academy-tray",
+        "[tools] ready at {}",
+        tools_path.display()
+    );
     Ok(())
 }
 

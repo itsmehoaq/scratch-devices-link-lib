@@ -257,6 +257,8 @@ fn main() {
     let _ = tracing_subscriber::fmt()
         .with_timer(timer)
         .with_writer(std::io::stderr)
+        .with_level(false)
+        .with_target(false)
         .try_init();
 
     let log = log_path();

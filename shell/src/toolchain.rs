@@ -1,6 +1,6 @@
 //! Toolchain auto-setup. Downloads the pre-packaged arduino-cli + ESP32 + AVR
 //! toolchain from the GitHub Tools release as a `.7z` archive and extracts it
-//! with 7zr. No per-tool or per-core download is needed after this.
+//! with sevenz-rust2. No per-tool or per-core download is needed after this.
 //!
 //! If pre-shipped tools are already present on disk, the download is skipped.
 
@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::download;
+#[cfg(unix)]
+use crate::progress::Spinner;
 
 #[cfg(windows)]
 pub const CLI_FILE: &str = "arduino-cli.exe";
@@ -31,8 +33,8 @@ pub fn check_toolchain(tools_path: &Path) -> (bool, PathBuf) {
 }
 
 /// Download and extract the pre-packaged tools archive (arduino-cli + ESP32
-/// core + AVR core) from the GitHub Tools release using 7zr. Reports progress
-/// via the `report` callback. Calls `report` with phases: downloading-tools | done
+/// core + AVR core) from the GitHub Tools release. Reports progress via the
+/// `report` callback. Calls `report` with phases: downloading-tools | done
 pub async fn setup_toolchain(tools_path: &Path, report: ProgressFn) -> Result<(), String> {
     let phase = |phase: &str, progress: u8| {
         report(SetupProgress {
@@ -41,17 +43,62 @@ pub async fn setup_toolchain(tools_path: &Path, report: ProgressFn) -> Result<()
         });
     };
 
+    let asset_name = download::TOOLS_7Z;
+    let download_url = format!("{}{}", download::ASSET_BASE, asset_name);
+
+    // Probe Content-Length with a quick HEAD request so we can size the progress bar.
+    let total_bytes = reqwest::Client::new()
+        .head(&download_url)
+        .send()
+        .await
+        .map_err(|e| format!("HEAD {download_url}: {e}"))?
+        .content_length()
+        .ok_or_else(|| "Content-Length header missing -- cannot show progress bar".to_string())?
+        as u64;
+
     phase("downloading-tools", 0);
-    match download::ensure_tools(tools_path) {
-        download::ToolsStatus::Present | download::ToolsStatus::Downloaded => {}
+
+    // Create the download progress bar. It renders in the current async context
+    // while the blocking sync download runs in spawn_blocking.
+    let dl = download::DownloadProgress::new(total_bytes);
+
+    // Clone to an owned PathBuf so it can be moved into spawn_blocking.
+    let tools_path_owned = tools_path.to_path_buf();
+    let dl = Arc::new(dl);
+    let dl_for_task = dl.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        download::ensure_tools(&tools_path_owned, &dl_for_task)
+    })
+    .await
+    .map_err(|e| format!("download task panicked: {e}"))?;
+
+    match result {
+        download::ToolsStatus::Present => {
+            // Tools were already on disk; nothing to download or extract.
+            dl.finish_ok("Toolchain ready");
+        }
+        download::ToolsStatus::Downloaded => {
+            // ensure_tools already called extract_archive (and deleted the .7z).
+            // Just finish the bar cleanly.
+            dl.finish_ok("Downloaded");
+        }
         download::ToolsStatus::Failed => {
             return Err("tools download/fetch failed".to_string());
         }
     }
+
     phase("downloading-tools", 100);
 
+    // Brief spinner while the cli chmod runs (unix only).
     #[cfg(unix)]
-    chmod_cli(tools_path);
+    {
+        let spin = Spinner::new("Setting permissions...");
+        chmod_cli(tools_path);
+        spin.finish_ok("Permissions set");
+    }
+    #[cfg(not(unix))]
+    let _ = ();
+    drop(dl); // drop bar reference before spinner finish
 
     phase("done", 100);
     Ok(())
