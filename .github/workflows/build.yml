@@ -1,14 +1,17 @@
-name: Build App
+name: Build & Release
 
 on:
   push:
-    branches: [macos-optimize, main, dev]
+    branches: [main, dev]
   pull_request:
     branches: [main, dev]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
@@ -42,6 +45,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
@@ -56,21 +65,25 @@ jobs:
           key: rust-${{ matrix.rust_target }}-${{ hashFiles('shell/Cargo.lock') }}
           restore-keys: rust-${{ matrix.rust_target }}-
 
+      - name: Install npm dependencies
+        run: npm install
+
       - name: Build Rust tray shell
         run: cargo build --release --manifest-path shell/Cargo.toml --target ${{ matrix.rust_target }}
 
-      - name: Package app
+      - name: Package app (${{ matrix.label }})
         run: ${{ matrix.pkg_script }}
 
-      - name: Create zip
-        if: matrix.app_path
+      - name: Create zip (macOS)
+        if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
 
       - name: Create zip (Windows)
         if: matrix.zip_cmd
+        shell: pwsh
         run: ${{ matrix.zip_cmd }}
 
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
@@ -80,20 +93,40 @@ jobs:
   release:
     name: Release
     needs: build
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/macos-optimize' || github.ref == 'refs/heads/main')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Read version
         id: ver
-        run: echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Download all artifacts
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
           merge-multiple: true
+
+      - name: Generate release body
+        id: body
+        run: |
+          cat > release-body.md <<-EOF
+          ## Future Academy Link v${{ steps.ver.outputs.version }}
+
+          ### Downloads
+          | Platform | Asset |
+          |----------|-------|
+          | Windows | FutureAcademy-win.zip |
+          | macOS Apple Silicon | FutureAcademy-arm64.zip |
+          | macOS Intel | FutureAcademy-intel.zip |
+
+          See [release.md](https://github.com/${{ github.repository }}/blob/main/release.md) for build instructions.
+          EOF
+          echo "EOF" >> release-body.md
 
       - name: Push tag
         run: |
@@ -103,10 +136,12 @@ jobs:
           git tag -f ${{ steps.ver.outputs.tag }} ${{ github.sha }}
           git push origin ${{ steps.ver.outputs.tag }} --force
 
-      - name: Publish release
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
+          body_path: release-body.md
           files: artifacts/*.zip
           make_latest: true
+
