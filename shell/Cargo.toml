@@ -35,10 +35,11 @@ serialport = "4"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 ureq = { version = "2.10", features = ["json"] }
 
-# Pure-Rust 7z extraction for the toolchain archive. Supports the modern
-# LZMA2 + Delta method used by the release .7z — no external 7zr/7-Zip needed.
-sevenz-rust2 = { version = "0.21", default-features = false, features = ["util"] }
-sha2 = "0.10"
+# Archive extraction
+flate2 = "1"
+bzip2 = "0.4"
+tar = "0.4"
+zip = "2"
 
 # Misc
 base64 = "0.22"
@@ -46,8 +47,7 @@ hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 open = "5"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["time"] }
-time = { version = "0.3", features = ["formatting", "local-offset"] }
+tracing-subscriber = "0.3"
 indicatif = "0.17"
 
 [target.'cfg(windows)'.dependencies]

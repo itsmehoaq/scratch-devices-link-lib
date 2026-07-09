@@ -625,7 +625,6 @@ class Arduino {
                 '--warnings=none',
                 '--verbose',
                 '--build-path', this._buildPath,
-                '--build-cache-path', this._buildCachePath,
                 '--config-file', this._configFilePath,
                 this._codeFolderPath
             ];

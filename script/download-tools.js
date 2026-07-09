@@ -116,8 +116,9 @@ const downloadAndVerifyFile = async (fileUrl, filePath, expectedChecksum) => new
         const bar = new ProgressBar('Downloading [ :bar ] :percent :etas :speed', {
             total: fileSize,
             width: 40,
-            renderThrottle: 500,
-            clear: true
+            renderThrottle: 200,
+            clear: true,
+            incomplete: ' '
         });
 
         if (!fs.existsSync(path.dirname(filePath))) {

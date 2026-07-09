@@ -95,7 +95,7 @@ impl AppState {
         self.connections.load(Ordering::Relaxed).max(0)
     }
 
-    fn ready(&self) -> bool {
+    pub fn ready(&self) -> bool {
         self.setup_phase().is_none()
     }
 }

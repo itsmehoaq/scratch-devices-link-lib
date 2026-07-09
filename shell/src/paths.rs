@@ -1,5 +1,6 @@
 //! Runtime path resolution. Port of `src/lib/runtime-paths.js`.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -214,4 +215,38 @@ pub fn validate_tools_layout(tools_path: &Path) -> ToolsLayout {
         arduino_cli_path,
         missing,
     }
+}
+
+/// Returns true if the ESP32-S3 xtensa cross-compiler toolchain is present.
+/// This goes beyond `check_toolchain` — the CLI binary existing is not enough;
+/// the actual compiler must also be on disk, or arduino-cli will silently use
+/// its bundled (Linux/macOS) path as a fallback and produce the `/bin/…` path
+/// seen in Windows build errors.
+///
+/// The tool archive extracts to:
+///   packages/esp32/tools/xtensa-esp32s3-elf-gcc/<version>/xtensa-esp32s3-elf/bin/
+pub fn is_esp32_toolchain_ready(tools_path: &Path) -> bool {
+    let tools_root = tools_path
+        .join("Arduino")
+        .join("packages")
+        .join("esp32")
+        .join("tools");
+    let Ok(entries) = fs::read_dir(tools_root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("xtensa-esp32s3-elf-gcc") {
+            let bin = entry
+                .path()
+                .join("xtensa-esp32s3-elf")
+                .join("bin")
+                .join("xtensa-esp32s3-elf-gcc.exe");
+            if bin.exists() {
+                return true;
+            }
+        }
+    }
+    false
 }
