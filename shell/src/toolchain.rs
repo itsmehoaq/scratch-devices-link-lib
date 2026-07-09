@@ -7,11 +7,15 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use bzip2::read::BzDecoder;
 use futures_util::StreamExt;
 use serde::Deserialize;
+
+use crate::download;
+use crate::progress::Spinner;
 
 pub const ESP32_INDEX_URL: &str =
     "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json";
@@ -849,7 +853,8 @@ async fn setup_inner(
     // while the blocking sync download runs in spawn_blocking.
     let dl = download::DownloadProgress::new(total_bytes);
 
-    // Clone to an owned PathBuf so it can be moved into spawn_blocking.
+    // tools_path is the parent of arduino_dir (arduino_dir = tools_path/Arduino).
+    let tools_path = arduino_dir.parent().unwrap_or(Path::new("."));
     let tools_path_owned = tools_path.to_path_buf();
     let dl = Arc::new(dl);
     let dl_for_task = dl.clone();
@@ -873,23 +878,6 @@ async fn setup_inner(
             return Err("tools download/fetch failed".to_string());
         }
     }
-
-    // Extraction is synchronous; wrap in spawn_blocking so it doesn't block the async runtime.
-    let report_ext = report.clone();
-    let on_extract_progress: Arc<ExtractProgress> = Arc::new(move |pct: u8| {
-        report_ext(SetupProgress {
-            phase: "extracting-cli".to_string(),
-            progress: pct,
-        });
-    });
-    let archive_path_for_blocking = archive_path.clone();
-    let arduino_dir_for_blocking = arduino_dir.to_path_buf();
-    phase("extracting-cli", 0);
-    tokio::task::spawn_blocking(move || {
-        extract_archive(&archive_path_for_blocking, &arduino_dir_for_blocking, Some(&on_extract_progress))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
 
     // Brief spinner while the cli chmod runs (unix only).
     #[cfg(unix)]
