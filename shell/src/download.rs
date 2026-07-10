@@ -85,6 +85,12 @@ pub fn ensure_tools(tools_path: &Path, dl: &DownloadProgress) -> ToolsStatus {
         return ToolsStatus::Present;
     }
 
+    // Remove any leftover tools directory from a prior failed extraction so
+    // the fresh extraction doesn't trip over existing paths.
+    if tools_path.exists() {
+        let _ = std::fs::remove_dir_all(tools_path);
+    }
+
     tracing::info!(
         target: "future-academy-tray",
         "[tools] not found at {} -- downloading from GitHub release Tools",
