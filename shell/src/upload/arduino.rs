@@ -127,28 +127,53 @@ impl Arduino {
         self.fqbn.to_lowercase().contains("flashsize=16m")
     }
 
-    /// Port of `_parseUploadSketchPayload`. Returns (main, extra_files).
-    fn parse_upload_sketch_payload(raw: &str) -> (String, BTreeMap<String, String>) {
+    /// Port of `_parseUploadSketchPayload`. Returns (main, extra_files, bundled_libraries).
+    fn parse_upload_sketch_payload(
+        raw: &str,
+    ) -> (
+        String,
+        BTreeMap<String, String>,
+        BTreeMap<String, BTreeMap<String, String>>,
+    ) {
         let trimmed = raw.trim_start();
         if trimmed.starts_with('{') {
             if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
                 let is_v1 = parsed.get("v").and_then(|v| v.as_i64()) == Some(1);
                 let main = parsed.get("main").and_then(|v| v.as_str());
                 let files = parsed.get("files").and_then(|v| v.as_object());
+                let libs = parsed.get("libraries").and_then(|v| v.as_object());
                 if is_v1 {
-                    if let (Some(main), Some(files)) = (main, files) {
+                    if let Some(main) = main {
                         let mut extra = BTreeMap::new();
-                        for (k, v) in files {
-                            if let Some(s) = v.as_str() {
-                                extra.insert(k.clone(), s.to_string());
+                        if let Some(files) = files {
+                            for (k, v) in files {
+                                if let Some(s) = v.as_str() {
+                                    extra.insert(k.clone(), s.to_string());
+                                }
                             }
                         }
-                        return (main.to_string(), extra);
+                        let mut bundled = BTreeMap::new();
+                        if let Some(libs) = libs {
+                            for (lib_name, lib_files) in libs {
+                                if let Some(obj) = lib_files.as_object() {
+                                    let mut files = BTreeMap::new();
+                                    for (fp, content) in obj {
+                                        if let Some(s) = content.as_str() {
+                                            files.insert(fp.clone(), s.to_string());
+                                        }
+                                    }
+                                    if !files.is_empty() {
+                                        bundled.insert(lib_name.clone(), files);
+                                    }
+                                }
+                            }
+                        }
+                        return (main.to_string(), extra, bundled);
                     }
                 }
             }
         }
-        (raw.to_string(), BTreeMap::new())
+        (raw.to_string(), BTreeMap::new(), BTreeMap::new())
     }
 
     /// Port of `_applySourceTransforms`.
@@ -637,7 +662,7 @@ impl Arduino {
         let discovered = self.discover_manual_library_paths();
         self.ensure_manual_library_compat_headers(&discovered, sendstd);
 
-        let (sketch_main, payload_files) = Self::parse_upload_sketch_payload(code);
+        let (sketch_main, payload_files, bundled_libraries) = Self::parse_upload_sketch_payload(code);
         let transformed =
             self.sanitize_sketch_source(&self.apply_source_transforms(&sketch_main), sendstd);
         let (main, marker_files) = Self::extract_windify_extra_sketch_files(&transformed);
@@ -673,6 +698,37 @@ impl Arduino {
         }
         fs::write(&self.code_file_path, &main).map_err(|e| e.to_string())?;
 
+        // ── Write bundled libraries (from {v:1, libraries} JSON payload) ──
+        let mut bundled_libs_dir: Option<PathBuf> = None;
+        if !bundled_libraries.is_empty() {
+            let libs_dir = self.code_folder_path.join("libraries");
+            fs::create_dir_all(&libs_dir).map_err(|e| e.to_string())?;
+            for (lib_name, files) in &bundled_libraries {
+                let lib_dir = libs_dir.join(lib_name);
+                fs::create_dir_all(&lib_dir).map_err(|e| e.to_string())?;
+                for (file_path, content) in files {
+                    // Use parent-joined path to preserve subdirectories (e.g. "src/Windify.h")
+                    let target = lib_dir.join(file_path);
+                    if let Some(parent) = target.parent() {
+                        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                    fs::write(&target, content).map_err(|e| e.to_string())?;
+                    sendstd(
+                        &format!("Bundled library: {}/{} <- {}\n", lib_name, file_path, lib_dir.display()),
+                        None,
+                    );
+                }
+            }
+            bundled_libs_dir = Some(libs_dir.clone());
+            sendstd(
+                &format!(
+                    "Bundled libraries written to: {}\n",
+                    libs_dir.display()
+                ),
+                None,
+            );
+        }
+
         let compile_fqbn = self.build_compile_fqbn(has_windify_audio);
         let mut args: Vec<String> = vec![
             "compile".into(),
@@ -689,6 +745,16 @@ impl Arduino {
 
         // Inject libraries (matches JS splice(3, ...) order, reversed loop).
         let mut extra_libs: Vec<PathBuf> = self.build_compile_library_paths();
+
+        // Bundled libraries from JSON payload take highest priority (insert at front).
+        if let Some(ref libs_dir) = bundled_libs_dir {
+            extra_libs.insert(0, libs_dir.clone());
+            sendstd(
+                &format!("Inject bundled library dir: {}\n", libs_dir.display()),
+                None,
+            );
+        }
+
         if has_at32_markers {
             if let Some(ws) = self.get_bundled_at32_ws2812b_library_path() {
                 if !extra_libs.contains(&ws) {
