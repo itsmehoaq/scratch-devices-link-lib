@@ -13,6 +13,7 @@ mod progress;
 mod serial;
 mod server;
 mod toolchain;
+mod update;
 mod upload;
 mod usb_id;
 mod ws;
@@ -113,6 +114,7 @@ impl TrayState {
 #[derive(Debug)]
 enum UserEvent {
     Status(TrayState),
+    UpdateCheck(update::UpdateCheck),
 }
 
 /// Return current local time as "HH:MM:SS" suitable for log prefixes.
@@ -348,6 +350,29 @@ fn main() {
         });
     }
 
+    // ── Background OTA update check (5 s after startup, then every 4 h) ────
+    let proxy_upd = proxy.clone();
+    {
+        let proxy = proxy.clone();
+        thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("update check runtime");
+            let client = reqwest::Client::builder()
+                .user_agent("FutureAcademyLink/2.0")
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("update check client");
+
+            thread::sleep(Duration::from_secs(5));
+
+            loop {
+                let result = rt.block_on(update::check_for_update(&client));
+                let _ = proxy.send_event(UserEvent::UpdateCheck(result));
+                thread::sleep(Duration::from_secs(4 * 60 * 60));
+            }
+        });
+    }
+
     // ── Static menu items (never removed) ───────────────────────────────────
     let menu = Menu::new();
     let title_item = MenuItem::new("Future Academy Link", false, None);
@@ -357,6 +382,8 @@ fn main() {
     let sep2 = PredefinedMenuItem::separator();
     let open_website = MenuItem::new("Open Website", true, None);
     let sep3 = PredefinedMenuItem::separator();
+    let update_check_item = MenuItem::new("Check for Updates\u{2026}", true, None);
+    let sep_upd = PredefinedMenuItem::separator();
     let debug_header = MenuItem::new("Debug", false, None);
     let show_log = MenuItem::new("Show Console Log", true, None);
     let sep4 = PredefinedMenuItem::separator();
@@ -374,6 +401,8 @@ fn main() {
     menu.append(&sep2).ok();
     menu.append(&open_website).ok();
     menu.append(&sep3).ok();
+    menu.append(&update_check_item).ok();
+    menu.append(&sep_upd).ok();
     menu.append(&debug_header).ok();
     menu.append(&show_log).ok();
     menu.append(&sep4).ok();
@@ -382,6 +411,7 @@ fn main() {
     let open_website_id = open_website.id().clone();
     let show_log_id = show_log.id().clone();
     let quit_id = quit_item.id().clone();
+    let update_check_id = update_check_item.id().clone();
 
     let icon = {
         // Load logo.png and resize to 44×44 px (22 pt @2× Retina).
@@ -401,6 +431,8 @@ fn main() {
 
     // Devices section starts right after devices_header (index 4 in the menu).
     let mut current_device_items: Vec<MenuItem> = Vec::new();
+    let mut update_check_in_progress = false;
+    let mut pending_update: Option<update::UpdateInfo> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -412,6 +444,35 @@ fn main() {
                 show_console_log(&log);
             } else if ev.id == quit_id {
                 *control_flow = ControlFlow::Exit;
+            } else if ev.id == update_check_id {
+                if update_check_in_progress {
+                    // Already checking — ignore.
+                } else if let Some(ref info) = pending_update {
+                    // Update is available → download & apply stub: just show info.
+                    update_check_item.set_text(&format!(
+                        "Update {} → download at:\n{}",
+                        info.version_label, info.download_url
+                    ));
+                    update_check_item.set_enabled(true);
+                    pending_update = None;
+                } else {
+                    // Manual trigger.
+                    update_check_item.set_text("Checking for updates\u{2026}");
+                    update_check_item.set_enabled(false);
+                    update_check_in_progress = true;
+                    let proxy = proxy_upd.clone();
+                    thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new().expect("manual check rt");
+                        let client = reqwest::Client::builder()
+                            .user_agent("FutureAcademyLink/2.0")
+                            .connect_timeout(Duration::from_secs(10))
+                            .timeout(Duration::from_secs(30))
+                            .build()
+                            .expect("manual check client");
+                        let result = rt.block_on(update::check_for_update(&client));
+                        let _ = proxy.send_event(UserEvent::UpdateCheck(result));
+                    });
+                }
             }
         }
 
@@ -439,6 +500,26 @@ fn main() {
                         menu.insert(&item, 4 + i).ok();
                         current_device_items.push(item);
                     }
+                }
+            }
+        } else if let Event::UserEvent(UserEvent::UpdateCheck(result)) = event {
+            update_check_in_progress = false;
+            match result {
+                update::UpdateCheck::UpToDate => {
+                    update_check_item.set_text("Up to date");
+                    update_check_item.set_enabled(true);
+                    pending_update = None;
+                }
+                update::UpdateCheck::Available(info) => {
+                    update_check_item
+                        .set_text(&format!("Update to {} available \u{2192}", info.version_label));
+                    update_check_item.set_enabled(true);
+                    pending_update = Some(info);
+                }
+                update::UpdateCheck::Error(e) => {
+                    update_check_item.set_text(&format!("Update failed: {e}"));
+                    update_check_item.set_enabled(true);
+                    pending_update = None;
                 }
             }
         }
