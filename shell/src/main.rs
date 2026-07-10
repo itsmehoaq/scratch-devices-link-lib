@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 // Future Academy Link — single-binary tray shell + local hardware link server.
 //
 // The tray event loop owns the main thread (tao requirement). A tokio runtime
@@ -21,6 +23,7 @@ mod ws;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::{fs::OpenOptions, io::Write};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
@@ -117,6 +120,25 @@ enum UserEvent {
     UpdateCheck(update::UpdateCheck),
     UpdateProgress { received: u64, total: u64 },
     UpdateApplied(update::ApplyOutcome),
+}
+
+#[derive(Clone)]
+struct SharedLogWriter(Arc<Mutex<std::fs::File>>);
+
+impl Write for SharedLogWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("log file lock poisoned"))?
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("log file lock poisoned"))?
+            .flush()
+    }
 }
 
 /// Return current local time as "HH:MM:SS" suitable for log prefixes.
@@ -300,21 +322,27 @@ fn start_runtime() {
 }
 
 fn main() {
-    // Logging to stderr with local HH:MM:SS timestamps.
+    let log = log_path();
+    if let Some(parent) = log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // The tray application never needs a persistent console. Write routine
+    // diagnostics to the file opened by the explicit "Show Console Log" item.
+    let log_file = OpenOptions::new().create(true).append(true).open(&log);
     let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let fmt = format_description::parse_borrowed::<2>("[hour]:[minute]:[second]")
         .expect("valid time format");
     let timer = OffsetTime::new(offset, fmt);
-    let _ = tracing_subscriber::fmt()
-        .with_timer(timer)
-        .with_writer(std::io::stderr)
-        .with_level(false)
-        .with_target(false)
-        .try_init();
-
-    let log = log_path();
-    if let Some(parent) = log.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Ok(file) = log_file {
+        let writer = SharedLogWriter(Arc::new(Mutex::new(file)));
+        let _ = tracing_subscriber::fmt()
+            .with_timer(timer)
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_level(false)
+            .with_target(false)
+            .try_init();
     }
 
     // --headless: run without tray icon, just the server. Use Ctrl+C to stop.

@@ -660,7 +660,10 @@ try {
         return ApplyOutcome::Failed(format!("Failed to create Windows update helper: {error}"));
     }
 
-    let spawn_result = Command::new("powershell.exe")
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut helper_command = Command::new("powershell.exe");
+    helper_command
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -677,8 +680,9 @@ try {
         .arg(&staging_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+        .stderr(Stdio::null());
+    helper_command.creation_flags(CREATE_NO_WINDOW);
+    let spawn_result = helper_command.spawn();
 
     if let Err(error) = spawn_result {
         let _ = std::fs::remove_file(&helper_path);

@@ -878,9 +878,10 @@ impl Arduino {
             if abort.load(Ordering::Relaxed) {
                 #[cfg(windows)]
                 {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/pid", &pid.to_string(), "/f", "/t"])
-                        .status();
+                    let mut cmd = std::process::Command::new("taskkill");
+                    cmd.args(["/pid", &pid.to_string(), "/f", "/t"]);
+                    configure_killable(&mut cmd);
+                    let _ = cmd.status();
                 }
                 #[cfg(unix)]
                 unsafe {
@@ -1435,9 +1436,10 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
 
     run_cli_sync(&cli_path, &["config", "init", "--dest-file", &cfg_str]);
 
-    let out = std::process::Command::new(&cli_path)
-        .args(["config", "dump", "--config-file", &cfg_str])
-        .output();
+    let mut dump_cmd = std::process::Command::new(&cli_path);
+    dump_cmd.args(["config", "dump", "--config-file", &cfg_str]);
+    configure_killable(&mut dump_cmd);
+    let out = dump_cmd.output();
     if let Ok(out) = out {
         let parsed: Value = serde_yaml::from_slice(&out.stdout).unwrap_or(Value::Null);
         let directories = parsed.get("directories");

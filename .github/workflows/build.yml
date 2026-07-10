@@ -73,6 +73,20 @@ jobs:
         env:
           OTA_MANIFEST_URL: ${{ vars.OTA_MANIFEST_URL }}
 
+      - name: Verify Windows GUI subsystem
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+          $optionalHeader = $peOffset + 24
+          $subsystem = [System.BitConverter]::ToUInt16($bytes, $optionalHeader + 68)
+          if ($subsystem -ne 2) {
+            throw "Expected Windows GUI subsystem (2), found $subsystem"
+          }
+          Write-Host "Verified Windows GUI subsystem; no console will be attached."
+
       - name: Package app (${{ matrix.label }})
         run: ${{ matrix.pkg_script }}
 
