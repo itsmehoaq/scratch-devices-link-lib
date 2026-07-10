@@ -7,6 +7,7 @@
 //! a periodic unplug-check tick, so there are no shared locks.
 
 use std::collections::HashMap;
+use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -251,6 +252,12 @@ impl SerialportSession {
                 // services always null in practice → []
                 self.session.send_response(&id, json!([]), Value::Null);
             }
+            "syncLibraries" => {
+                match self.sync_libraries(&params).await {
+                    Ok(()) => self.session.send_response(&id, Value::Null, Value::Null),
+                    Err(e) => self.session.send_response(&id, Value::Null, json!(e)),
+                }
+            }
             "pingMe" => {
                 self.session
                     .send_response(&id, json!("willPing"), Value::Null);
@@ -268,6 +275,44 @@ impl SerialportSession {
                     .send_response(&id, Value::Null, json!("Method not found"));
             }
         }
+    }
+
+    // ── syncLibraries ─────────────────────────────────────────────────────
+
+    /// Write bundled library files from the web app into tools/Arduino/libraries/.
+    /// Params: { libraries: { "LibName": { "LibName/file.h": "...", "LibName/file.cpp": "..." } } }
+    async fn sync_libraries(&mut self, params: &Value) -> Result<(), String> {
+        let libs = params.get("libraries").and_then(|v| v.as_object()).ok_or_else(|| {
+            "syncLibraries: missing 'libraries' field".to_string()
+        })?;
+
+        let base = self.tools_path.join("Arduino").join("libraries");
+        fs::create_dir_all(&base).map_err(|e| format!("syncLibraries: {}", e))?;
+
+        let mut count = 0usize;
+        for (lib_name, files) in libs {
+            let lib_dir = base.join(lib_name);
+            if let Some(obj) = files.as_object() {
+                for (file_path, content) in obj {
+                    if let Some(s) = content.as_str() {
+                        let target = lib_dir.join(file_path);
+                        if let Some(parent) = target.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        let _ = fs::write(&target, s);
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            "syncLibraries: wrote {} files across {} libraries to {}",
+            count,
+            libs.len(),
+            base.display()
+        );
+        Ok(())
     }
 
     // ── discover ─────────────────────────────────────────────────────────
