@@ -151,7 +151,9 @@ ota/releases/v2.0.7/FutureAcademy-intel.zip
 binary uses GitHub Releases directly. R2 publishing is disabled when all six
 values are absent, and CI fails early if only part of the configuration exists.
 
-When a newer manifest is detected, the running app downloads the matching
-platform archive, verifies its SHA-256 digest, stages the replacement, exits,
-and relaunches automatically. macOS swaps the complete signed `.app` bundle;
-Windows swaps the running executable through a detached PowerShell helper.
+When a newer manifest is detected, the tray shows **Update to vX**. Clicking it
+downloads the matching platform archive, verifies its SHA-256 digest, and
+stages the replacement in-app. The tray then shows **Restart to install vX**;
+that confirmation exits, swaps the update, and relaunches automatically. macOS
+swaps the complete signed `.app` bundle, while Windows swaps the executable
+through a detached hidden PowerShell helper.

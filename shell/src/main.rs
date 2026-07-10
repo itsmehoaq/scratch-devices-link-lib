@@ -118,8 +118,14 @@ impl TrayState {
 enum UserEvent {
     Status(TrayState),
     UpdateCheck(update::UpdateCheck),
-    UpdateProgress { received: u64, total: u64 },
-    UpdateApplied(update::ApplyOutcome),
+    UpdateProgress {
+        received: u64,
+        total: u64,
+    },
+    UpdatePrepared {
+        version_label: String,
+        result: Result<update::PreparedUpdate, String>,
+    },
 }
 
 #[derive(Clone)]
@@ -466,6 +472,8 @@ fn main() {
     // Devices section starts right after devices_header (index 4 in the menu).
     let mut current_device_items: Vec<MenuItem> = Vec::new();
     let mut update_check_in_progress = false;
+    let mut pending_update: Option<update::UpdateInfo> = None;
+    let mut prepared_update: Option<update::PreparedUpdate> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -480,6 +488,55 @@ fn main() {
             } else if ev.id == update_check_id {
                 if update_check_in_progress {
                     // Already checking — ignore.
+                } else if let Some(prepared) = prepared_update.take() {
+                    match update::install_prepared_update(prepared) {
+                        update::ApplyOutcome::RestartRequired => {
+                            update_check_item.set_text("Restarting to finish update\u{2026}");
+                            update_check_item.set_enabled(false);
+                            *control_flow = ControlFlow::Exit;
+                        }
+                        update::ApplyOutcome::Failed(error) => {
+                            update_check_item.set_text(&format!("Update failed: {error}"));
+                            update_check_item.set_enabled(true);
+                        }
+                    }
+                } else if let Some(info) = pending_update.take() {
+                    let version_label = info.version_label.clone();
+                    update_check_item.set_text(&format!("Downloading {}\u{2026}", version_label));
+                    update_check_item.set_enabled(false);
+                    update_check_in_progress = true;
+
+                    let proxy = proxy_upd.clone();
+                    thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new().expect("update download runtime");
+                        let client = reqwest::Client::builder()
+                            .user_agent("FutureAcademyLink/2.0")
+                            .connect_timeout(Duration::from_secs(10))
+                            .timeout(Duration::from_secs(30 * 60))
+                            .build()
+                            .expect("update download client");
+                        let progress_proxy = proxy.clone();
+                        let progress: Arc<dyn Fn(u64, u64) + Send + Sync> =
+                            Arc::new(move |received, total| {
+                                let _ = progress_proxy
+                                    .send_event(UserEvent::UpdateProgress { received, total });
+                            });
+
+                        let result = match rt.block_on(update::download_update(
+                            &client,
+                            &info,
+                            Some(progress),
+                        )) {
+                            update::DownloadOutcome::Downloaded(bytes) => {
+                                update::prepare_update(&bytes)
+                            }
+                            update::DownloadOutcome::Failed(error) => Err(error),
+                        };
+                        let _ = proxy.send_event(UserEvent::UpdatePrepared {
+                            version_label,
+                            result,
+                        });
+                    });
                 } else {
                     // Manual trigger.
                     update_check_item.set_text("Checking for updates\u{2026}");
@@ -533,47 +590,20 @@ fn main() {
                 update::UpdateCheck::UpToDate => {
                     update_check_item.set_text("Up to date");
                     update_check_item.set_enabled(true);
+                    pending_update = None;
+                    prepared_update = None;
                 }
                 update::UpdateCheck::Available(info) => {
                     let version_label = info.version_label.clone();
-                    update_check_item.set_text(&format!("Downloading {}\u{2026}", version_label));
-                    update_check_item.set_enabled(false);
-                    update_check_in_progress = true;
-
-                    let proxy = proxy_upd.clone();
-                    thread::spawn(move || {
-                        let rt = tokio::runtime::Runtime::new().expect("update download runtime");
-                        let client = reqwest::Client::builder()
-                            .user_agent("FutureAcademyLink/2.0")
-                            .connect_timeout(Duration::from_secs(10))
-                            .timeout(Duration::from_secs(30 * 60))
-                            .build()
-                            .expect("update download client");
-                        let progress_proxy = proxy.clone();
-                        let progress: Arc<dyn Fn(u64, u64) + Send + Sync> =
-                            Arc::new(move |received, total| {
-                                let _ = progress_proxy
-                                    .send_event(UserEvent::UpdateProgress { received, total });
-                            });
-
-                        let outcome = match rt.block_on(update::download_update(
-                            &client,
-                            &info,
-                            Some(progress),
-                        )) {
-                            update::DownloadOutcome::Downloaded(bytes) => {
-                                update::apply_update(&bytes)
-                            }
-                            update::DownloadOutcome::Failed(error) => {
-                                update::ApplyOutcome::Failed(error)
-                            }
-                        };
-                        let _ = proxy.send_event(UserEvent::UpdateApplied(outcome));
-                    });
+                    update_check_item.set_text(&format!("Update to {} \u{2192}", version_label));
+                    update_check_item.set_enabled(true);
+                    pending_update = Some(info);
+                    prepared_update = None;
                 }
                 update::UpdateCheck::Error(e) => {
                     update_check_item.set_text(&format!("Update failed: {e}"));
                     update_check_item.set_enabled(true);
+                    pending_update = None;
                 }
             }
         } else if let Event::UserEvent(UserEvent::UpdateProgress { received, total }) = event {
@@ -586,14 +616,20 @@ fn main() {
                     received / 1024
                 ));
             }
-        } else if let Event::UserEvent(UserEvent::UpdateApplied(outcome)) = event {
-            match outcome {
-                update::ApplyOutcome::RestartRequired => {
-                    update_check_item.set_text("Update ready \u{2014} restarting\u{2026}");
-                    *control_flow = ControlFlow::Exit;
+        } else if let Event::UserEvent(UserEvent::UpdatePrepared {
+            version_label,
+            result,
+        }) = event
+        {
+            update_check_in_progress = false;
+            match result {
+                Ok(prepared) => {
+                    prepared_update = Some(prepared);
+                    update_check_item
+                        .set_text(&format!("Restart to install {} \u{2192}", version_label));
+                    update_check_item.set_enabled(true);
                 }
-                update::ApplyOutcome::Failed(error) => {
-                    update_check_in_progress = false;
+                Err(error) => {
                     update_check_item.set_text(&format!("Update failed: {error}"));
                     update_check_item.set_enabled(true);
                 }

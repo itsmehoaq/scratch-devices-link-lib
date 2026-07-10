@@ -103,6 +103,50 @@ pub enum ApplyOutcome {
     Failed(String),
 }
 
+/// A verified update staged on disk and waiting for user-confirmed restart.
+#[derive(Debug)]
+pub struct PreparedUpdate {
+    plan: Option<PreparedPlatformUpdate>,
+}
+
+#[derive(Debug)]
+enum PreparedPlatformUpdate {
+    #[cfg(target_os = "macos")]
+    MacOS {
+        app_bundle: PathBuf,
+        staged_bundle: PathBuf,
+        backup_bundle: PathBuf,
+        staging_container: PathBuf,
+    },
+    #[cfg(target_os = "windows")]
+    Windows {
+        current_executable: PathBuf,
+        staged_executable: PathBuf,
+    },
+}
+
+impl Drop for PreparedUpdate {
+    fn drop(&mut self) {
+        let Some(plan) = self.plan.as_ref() else {
+            return;
+        };
+        match plan {
+            #[cfg(target_os = "macos")]
+            PreparedPlatformUpdate::MacOS {
+                staging_container, ..
+            } => {
+                let _ = std::fs::remove_dir_all(staging_container);
+            }
+            #[cfg(target_os = "windows")]
+            PreparedPlatformUpdate::Windows {
+                staged_executable, ..
+            } => {
+                let _ = std::fs::remove_file(staged_executable);
+            }
+        }
+    }
+}
+
 // ── Platform helpers ────────────────────────────────────────────────────────
 
 /// Returns the release asset name for the current platform, e.g.
@@ -361,15 +405,22 @@ pub async fn download_update(
     DownloadOutcome::Downloaded(body)
 }
 
-/// Stage the downloaded update and start a detached platform helper that waits
-/// for this process to exit, swaps the staged application into place, and
-/// relaunches it.
-pub fn apply_update(archive_bytes: &[u8]) -> ApplyOutcome {
-    apply_update_for_platform(archive_bytes)
+/// Verify and stage an update without changing the running application.
+pub fn prepare_update(archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
+    prepare_update_for_platform(archive_bytes)
+}
+
+/// Start a detached helper that swaps a prepared update after this process
+/// exits and then relaunches the application.
+pub fn install_prepared_update(mut prepared: PreparedUpdate) -> ApplyOutcome {
+    let Some(plan) = prepared.plan.take() else {
+        return ApplyOutcome::Failed("Prepared update has already been consumed".to_string());
+    };
+    install_prepared_for_platform(plan)
 }
 
 #[cfg(target_os = "macos")]
-fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
+fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
     let exe = current_exe();
     let app_bundle = match exe
         .parent()
@@ -379,7 +430,7 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
     {
         Some(path) => path.to_path_buf(),
         None => {
-            return ApplyOutcome::Failed(format!(
+            return Err(format!(
                 "Running executable is not inside a macOS app bundle: {}",
                 exe.display()
             ));
@@ -388,29 +439,29 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
 
     let install_parent = match app_bundle.parent() {
         Some(path) => path,
-        None => return ApplyOutcome::Failed("App bundle has no parent directory".to_string()),
+        None => return Err("App bundle has no parent directory".to_string()),
     };
     let staging_container =
         install_parent.join(format!(".future-academy-update-{}", std::process::id()));
     if staging_container.exists() {
         if let Err(error) = std::fs::remove_dir_all(&staging_container) {
-            return ApplyOutcome::Failed(format!("Failed to clear update staging: {error}"));
+            return Err(format!("Failed to clear update staging: {error}"));
         }
     }
     if let Err(error) = std::fs::create_dir_all(&staging_container) {
-        return ApplyOutcome::Failed(format!("Failed to create update staging: {error}"));
+        return Err(format!("Failed to create update staging: {error}"));
     }
 
     if let Err(error) = extract_zip_archive(archive_bytes, &staging_container) {
         let _ = std::fs::remove_dir_all(&staging_container);
-        return ApplyOutcome::Failed(error);
+        return Err(error);
     }
 
     let staged_bundle = match find_staged_app_bundle(&staging_container) {
         Ok(path) => path,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&staging_container);
-            return ApplyOutcome::Failed(error);
+            return Err(error);
         }
     };
 
@@ -420,7 +471,7 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
         .join("FutureAcademyTray");
     if !staged_executable.is_file() {
         let _ = std::fs::remove_dir_all(&staging_container);
-        return ApplyOutcome::Failed(format!(
+        return Err(format!(
             "Staged macOS app is missing {}",
             staged_executable.display()
         ));
@@ -434,9 +485,7 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
         .unwrap_or(false);
     if !signature_valid {
         let _ = std::fs::remove_dir_all(&staging_container);
-        return ApplyOutcome::Failed(
-            "Staged macOS app failed code-signature verification".to_string(),
-        );
+        return Err("Staged macOS app failed code-signature verification".to_string());
     }
 
     let backup_bundle = install_parent.join(format!(
@@ -446,6 +495,26 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
             .and_then(|name| name.to_str())
             .unwrap_or("Future Academy Link.app")
     ));
+
+    tracing::info!("[update] prepared macOS app at {}", staged_bundle.display());
+    Ok(PreparedUpdate {
+        plan: Some(PreparedPlatformUpdate::MacOS {
+            app_bundle,
+            staged_bundle,
+            backup_bundle,
+            staging_container,
+        }),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn install_prepared_for_platform(plan: PreparedPlatformUpdate) -> ApplyOutcome {
+    let PreparedPlatformUpdate::MacOS {
+        app_bundle,
+        staged_bundle,
+        backup_bundle,
+        staging_container,
+    } = plan;
     let helper_script = r#"
 pid="$1"
 current="$2"
@@ -558,7 +627,7 @@ fn find_staged_app_bundle(staging_container: &Path) -> Result<PathBuf, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
+fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
     const BIN_NAME: &str = "FutureAcademyTray.exe";
 
     let exe = current_exe();
@@ -567,7 +636,7 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
     let cursor = Cursor::new(archive_bytes);
     let mut archive = match zip::ZipArchive::new(cursor) {
         Ok(a) => a,
-        Err(e) => return ApplyOutcome::Failed(format!("Failed to open update zip: {e}")),
+        Err(e) => return Err(format!("Failed to open update zip: {e}")),
     };
 
     // Find the binary inside the zip. It may be at the root or inside
@@ -585,13 +654,13 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
     let idx = match bin_index {
         Some(i) => i,
         None => {
-            return ApplyOutcome::Failed(format!("Binary '{}' not found in update zip", BIN_NAME));
+            return Err(format!("Binary '{}' not found in update zip", BIN_NAME));
         }
     };
 
     let mut entry = match archive.by_index(idx) {
         Ok(e) => e,
-        Err(e) => return ApplyOutcome::Failed(format!("Failed to read zip entry: {e}")),
+        Err(e) => return Err(format!("Failed to read zip entry: {e}")),
     };
 
     // Stage next to the current exe as `.new`.
@@ -603,19 +672,38 @@ fn apply_update_for_platform(archive_bytes: &[u8]) -> ApplyOutcome {
         let file = match std::fs::File::create(&staging_path) {
             Ok(f) => f,
             Err(e) => {
-                return ApplyOutcome::Failed(format!("Failed to create staging file: {e}"));
+                return Err(format!("Failed to create staging file: {e}"));
             }
         };
         let mut writer = BufWriter::new(file);
         if let Err(e) = std::io::copy(&mut entry, &mut writer) {
             let _ = std::fs::remove_file(&staging_path);
-            return ApplyOutcome::Failed(format!("Failed to extract binary: {e}"));
+            return Err(format!("Failed to extract binary: {e}"));
         }
         if let Err(e) = writer.flush() {
             let _ = std::fs::remove_file(&staging_path);
-            return ApplyOutcome::Failed(format!("Failed to flush binary: {e}"));
+            return Err(format!("Failed to flush binary: {e}"));
         }
     }
+
+    tracing::info!(
+        "[update] prepared Windows executable at {}",
+        staging_path.display()
+    );
+    Ok(PreparedUpdate {
+        plan: Some(PreparedPlatformUpdate::Windows {
+            current_executable: exe,
+            staged_executable: staging_path,
+        }),
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn install_prepared_for_platform(plan: PreparedPlatformUpdate) -> ApplyOutcome {
+    let PreparedPlatformUpdate::Windows {
+        current_executable: exe,
+        staged_executable: staging_path,
+    } = plan;
 
     let helper_path =
         std::env::temp_dir().join(format!("future-academy-updater-{}.ps1", std::process::id()));
@@ -698,7 +786,12 @@ try {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn apply_update_for_platform(_archive_bytes: &[u8]) -> ApplyOutcome {
+fn prepare_update_for_platform(_archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
+    Err("Automatic updates are unsupported on this platform".to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn install_prepared_for_platform(_plan: PreparedPlatformUpdate) -> ApplyOutcome {
     ApplyOutcome::Failed("Automatic updates are unsupported on this platform".to_string())
 }
 
