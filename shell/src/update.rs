@@ -1,8 +1,9 @@
 //! OTA self-update module.
 //!
-//! Checks the GitHub Releases API for a newer version of the tray binary,
-//! downloads the matching platform archive, verifies its SHA256, extracts
-//! the binary, swaps it with the current executable, and restarts.
+//! Checks the configured R2 OTA manifest for a newer version of the tray
+//! binary, with GitHub Releases as a fallback. Downloads the matching platform
+//! archive, verifies its SHA256, extracts the binary, swaps it with the current
+//! executable, and restarts.
 //!
 //! Release asset naming on GitHub:
 //! - `FutureAcademy-win.zip`    → Windows
@@ -35,6 +36,21 @@ struct GithubAsset {
     size: Option<u64>,
     #[serde(rename = "browser_download_url")]
     browser_download_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OtaManifest {
+    schema_version: u32,
+    version: String,
+    assets: Vec<OtaAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OtaAsset {
+    name: String,
+    url: String,
+    sha256: String,
+    size: Option<u64>,
 }
 
 // ── Public types ────────────────────────────────────────────────────────────
@@ -135,14 +151,35 @@ fn is_newer(local: &str, remote: &str) -> bool {
     }
 }
 
+fn ota_manifest_url() -> Option<&'static str> {
+    option_env!("OTA_MANIFEST_URL")
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/// Check the GitHub releases API for a newer version.
+/// Check the configured OTA source for a newer version.
 ///
 /// Called from the async runtime thread (or a blocking context via
 /// `tokio::task::spawn_blocking`). Returns an `UpdateCheck` variant.
 pub async fn check_for_update(client: &Client) -> UpdateCheck {
-    let url = "https://api.github.com/repos/Kannoki/scratch-devices-link-lib/releases/latest";
+    if let Some(url) = ota_manifest_url() {
+        match check_ota_manifest(client, url).await {
+            UpdateCheck::Error(error) => {
+                tracing::warn!(
+                    "[update] R2 manifest check failed, falling back to GitHub: {}",
+                    error
+                );
+            }
+            result => return result,
+        }
+    }
+
+    check_github_release(client).await
+}
+
+async fn check_ota_manifest(client: &Client, url: &str) -> UpdateCheck {
     let local_ver = env!("CARGO_PKG_VERSION");
 
     let resp = match client
@@ -154,11 +191,75 @@ pub async fn check_for_update(client: &Client) -> UpdateCheck {
     {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            return UpdateCheck::Error(format!(
-                "GitHub API returned HTTP {}",
-                r.status()
-            ))
+            return UpdateCheck::Error(format!("R2 OTA manifest returned HTTP {}", r.status()))
         }
+        Err(e) => return UpdateCheck::Error(format!("R2 OTA manifest request failed: {e}")),
+    };
+
+    let manifest: OtaManifest = match resp.json().await {
+        Ok(manifest) => manifest,
+        Err(e) => return UpdateCheck::Error(format!("Failed to parse R2 OTA manifest: {e}")),
+    };
+
+    if manifest.schema_version != 1 {
+        return UpdateCheck::Error(format!(
+            "Unsupported R2 OTA manifest schema: {}",
+            manifest.schema_version
+        ));
+    }
+
+    if !is_newer(local_ver, &manifest.version) {
+        return UpdateCheck::UpToDate;
+    }
+
+    let target_name = platform_asset_name();
+    let asset = match manifest
+        .assets
+        .iter()
+        .find(|asset| asset.name == target_name)
+    {
+        Some(asset) => asset,
+        None => {
+            return UpdateCheck::Error(format!(
+                "No R2 OTA asset found for platform ({}) in release v{}",
+                target_name, manifest.version
+            ));
+        }
+    };
+
+    if !asset.url.starts_with("https://") {
+        return UpdateCheck::Error(format!("R2 OTA asset URL must use HTTPS: {}", asset.url));
+    }
+
+    if asset.sha256.len() != 64 || !asset.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return UpdateCheck::Error(format!(
+            "R2 OTA asset has an invalid SHA256 digest: {}",
+            asset.name
+        ));
+    }
+
+    UpdateCheck::Available(UpdateInfo {
+        version: manifest.version.clone(),
+        version_label: format!("v{}", manifest.version),
+        download_url: asset.url.clone(),
+        sha256: Some(asset.sha256.clone()),
+        size: asset.size,
+    })
+}
+
+async fn check_github_release(client: &Client) -> UpdateCheck {
+    let url = "https://api.github.com/repos/itsmehoaq/scratch-devices-link-lib/releases/latest";
+    let local_ver = env!("CARGO_PKG_VERSION");
+
+    let resp = match client
+        .get(url)
+        .header("User-Agent", "FutureAcademyLink/2.0")
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => return UpdateCheck::Error(format!("GitHub API returned HTTP {}", r.status())),
         Err(e) => {
             return UpdateCheck::Error(format!("GitHub API request failed: {e}"));
         }
@@ -240,7 +341,10 @@ pub async fn download_update(
     }
 
     // Verify SHA256 if the release provides a digest.
-    if let Some(ref expected_hex) = info.sha256 {
+    if let Some(ref expected_digest) = info.sha256 {
+        let expected_hex = expected_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(expected_digest);
         let mut hasher = Sha256::new();
         hasher.update(&body);
         let actual_hex = hex::encode(hasher.finalize());
@@ -347,4 +451,47 @@ pub fn apply_update(archive_bytes: &[u8]) -> ApplyOutcome {
     );
 
     ApplyOutcome::RestartRequired
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_newer, parse_version, OtaManifest};
+
+    #[test]
+    fn parses_stable_versions_with_optional_v_prefix() {
+        assert_eq!(parse_version("2.0.7"), Some((2, 0, 7)));
+        assert_eq!(parse_version("v2.0.7"), Some((2, 0, 7)));
+        assert_eq!(parse_version("2.0"), None);
+    }
+
+    #[test]
+    fn only_accepts_strictly_newer_versions() {
+        assert!(is_newer("2.0.6", "2.0.7"));
+        assert!(is_newer("2.0.6", "3.0.0"));
+        assert!(!is_newer("2.0.6", "2.0.6"));
+        assert!(!is_newer("2.0.6", "1.9.9"));
+    }
+
+    #[test]
+    fn parses_generated_ota_manifest_contract() {
+        let manifest: OtaManifest = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "version": "2.0.7",
+                "published_at": "2026-07-10T00:00:00.000Z",
+                "assets": [{
+                    "name": "FutureAcademy-win.zip",
+                    "url": "https://updates.example.com/ota/releases/v2.0.7/FutureAcademy-win.zip",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "size": 123
+                }]
+            }"#,
+        )
+        .expect("generated manifest should deserialize");
+
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.version, "2.0.7");
+        assert_eq!(manifest.assets[0].name, "FutureAcademy-win.zip");
+        assert_eq!(manifest.assets[0].size, Some(123));
+    }
 }

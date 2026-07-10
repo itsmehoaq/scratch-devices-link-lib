@@ -107,4 +107,46 @@ Returns `{ devices: [...], raw: "..." }`.
 
 ## CI / Releases
 
-Pushing to `main` or `macos-optimize` triggers a build for all 3 platforms and auto-publishes a GitHub release tagged `v{version}` (from `package.json`). Zips are created on the native runner (`ditto` for macOS, `Compress-Archive` for Windows) to preserve permissions.
+Pushing to `main` or `dev` triggers a build for all 3 platforms. A successful
+`main` build publishes a GitHub release tagged `v{version}` (from
+`package.json`). Zips are created on the native runner (`ditto` for macOS,
+`Compress-Archive` for Windows) to preserve permissions.
+
+Every release requires a new stable semantic version. Update both
+`package.json` and `shell/Cargo.toml`. CI permits a retry when the existing tag
+points to the same commit, but refuses to move a tag from another commit.
+
+### Cloudflare R2 OTA publishing
+
+When the R2 repository variables below are configured, the release job also
+uploads the three platform archives to versioned R2 paths and publishes
+`ota/latest.json` after all archives are available. Before uploading, CI polls
+the current manifest's three public URLs. When that fallback is healthy, CI
+deletes anything older before upload and finally retains only the new release
+and that explicitly verified fallback. If the fallback cannot be verified,
+pruning is skipped. The desktop updater prefers this manifest and falls back to
+GitHub Releases if R2 is unavailable.
+
+Use a production R2 custom domain and configure these GitHub Actions values:
+
+| Type | Name | Value |
+|------|------|-------|
+| Secret | `R2_ACCESS_KEY_ID` | R2 API access key with object read/write access to the OTA bucket |
+| Secret | `R2_SECRET_ACCESS_KEY` | Matching R2 API secret |
+| Variable | `R2_ACCOUNT_ID` | Cloudflare account ID |
+| Variable | `R2_BUCKET` | R2 bucket name |
+| Variable | `R2_PUBLIC_BASE_URL` | Public HTTPS custom-domain origin, without a trailing slash |
+| Variable | `OTA_MANIFEST_URL` | Public manifest URL, normally `{R2_PUBLIC_BASE_URL}/ota/latest.json` |
+
+The object layout is:
+
+```text
+ota/latest.json
+ota/releases/v2.0.7/FutureAcademy-win.zip
+ota/releases/v2.0.7/FutureAcademy-arm64.zip
+ota/releases/v2.0.7/FutureAcademy-intel.zip
+```
+
+`OTA_MANIFEST_URL` is compiled into release binaries. If it is absent, the
+binary uses GitHub Releases directly. R2 publishing is disabled when all six
+values are absent, and CI fails early if only part of the configuration exists.
