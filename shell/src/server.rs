@@ -253,11 +253,14 @@ fn kill_stale_instances(port: u16) {
 
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
         // Kill whatever is listening on the port (old server instance).
-        if let Ok(o) = std::process::Command::new("netstat")
-            .args(["-ano"])
-            .output()
-        {
+        let mut netstat = std::process::Command::new("netstat");
+        netstat.args(["-ano"]);
+        netstat.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(o) = netstat.output() {
             let needle = format!(":{} ", port);
             for line in String::from_utf8_lossy(&o.stdout).lines() {
                 if line.contains(&needle) && line.to_uppercase().contains("LISTENING") {
@@ -265,9 +268,10 @@ fn kill_stale_instances(port: u16) {
                         if let Ok(pid) = pid_str.parse::<u32>() {
                             if pid != own_pid {
                                 tracing::warn!("[link] killing pid {} on port {}", pid, port);
-                                let _ = std::process::Command::new("taskkill")
-                                    .args(["/F", "/PID", pid_str])
-                                    .output();
+                                let mut taskkill = std::process::Command::new("taskkill");
+                                taskkill.args(["/F", "/PID", pid_str]);
+                                taskkill.creation_flags(CREATE_NO_WINDOW);
+                                let _ = taskkill.output();
                             }
                         }
                     }

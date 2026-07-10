@@ -288,9 +288,10 @@ impl Esp32 {
             if abort.load(Ordering::Relaxed) {
                 #[cfg(windows)]
                 {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/pid", &pid.to_string(), "/f", "/t"])
-                        .status();
+                    let mut cmd = std::process::Command::new("taskkill");
+                    cmd.args(["/pid", &pid.to_string(), "/f", "/t"]);
+                    configure_killable(&mut cmd);
+                    let _ = cmd.status();
                 }
                 #[cfg(unix)]
                 unsafe {

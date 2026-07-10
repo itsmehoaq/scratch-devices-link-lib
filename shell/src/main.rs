@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 // Future Academy Link — single-binary tray shell + local hardware link server.
 //
 // The tray event loop owns the main thread (tao requirement). A tokio runtime
@@ -21,6 +23,7 @@ mod ws;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::{fs::OpenOptions, io::Write};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
@@ -115,6 +118,33 @@ impl TrayState {
 enum UserEvent {
     Status(TrayState),
     UpdateCheck(update::UpdateCheck),
+    UpdateProgress {
+        received: u64,
+        total: u64,
+    },
+    UpdatePrepared {
+        version_label: String,
+        result: Result<update::PreparedUpdate, String>,
+    },
+}
+
+#[derive(Clone)]
+struct SharedLogWriter(Arc<Mutex<std::fs::File>>);
+
+impl Write for SharedLogWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("log file lock poisoned"))?
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("log file lock poisoned"))?
+            .flush()
+    }
 }
 
 /// Return current local time as "HH:MM:SS" suitable for log prefixes.
@@ -212,9 +242,11 @@ fn start_runtime() {
                 // updates on a stable terminal line even when tokio yields.
                 let pb = ProgressBar::new(100);
                 pb.set_style(
-                    ProgressStyle::with_template("{spinner:.cyan} [{bar:40}] {msg:.dim} {percent:>3}%")
-                        .unwrap()
-                        .progress_chars("█▉▊▋▌▍▎▏  "),
+                    ProgressStyle::with_template(
+                        "{spinner:.cyan} [{bar:40}] {msg:.dim} {percent:>3}%",
+                    )
+                    .unwrap()
+                    .progress_chars("█▉▊▋▌▍▎▏  "),
                 );
                 pb.set_message("downloading-cli");
                 let pb = Arc::new(Mutex::new(Some(pb)));
@@ -256,9 +288,11 @@ fn start_runtime() {
                     let tx_clone = tx_for_setup.clone();
                     let report_fn: toolchain::ProgressFn =
                         Arc::new(move |p: toolchain::SetupProgress| {
-                            app_for_cb.set_setup_phase(
-                                if p.phase == "done" { None } else { Some(p.phase.clone()) },
-                            );
+                            app_for_cb.set_setup_phase(if p.phase == "done" {
+                                None
+                            } else {
+                                Some(p.phase.clone())
+                            });
                             app_for_cb.set_setup_progress(p.progress);
                             let _ = tx_clone.send((p.phase.clone(), p.progress));
                         });
@@ -294,21 +328,27 @@ fn start_runtime() {
 }
 
 fn main() {
-    // Logging to stderr with local HH:MM:SS timestamps.
+    let log = log_path();
+    if let Some(parent) = log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // The tray application never needs a persistent console. Write routine
+    // diagnostics to the file opened by the explicit "Show Console Log" item.
+    let log_file = OpenOptions::new().create(true).append(true).open(&log);
     let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let fmt = format_description::parse_borrowed::<2>("[hour]:[minute]:[second]")
         .expect("valid time format");
     let timer = OffsetTime::new(offset, fmt);
-    let _ = tracing_subscriber::fmt()
-        .with_timer(timer)
-        .with_writer(std::io::stderr)
-        .with_level(false)
-        .with_target(false)
-        .try_init();
-
-    let log = log_path();
-    if let Some(parent) = log.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Ok(file) = log_file {
+        let writer = SharedLogWriter(Arc::new(Mutex::new(file)));
+        let _ = tracing_subscriber::fmt()
+            .with_timer(timer)
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_level(false)
+            .with_target(false)
+            .try_init();
     }
 
     // --headless: run without tray icon, just the server. Use Ctrl+C to stop.
@@ -433,6 +473,7 @@ fn main() {
     let mut current_device_items: Vec<MenuItem> = Vec::new();
     let mut update_check_in_progress = false;
     let mut pending_update: Option<update::UpdateInfo> = None;
+    let mut prepared_update: Option<update::PreparedUpdate> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -447,14 +488,55 @@ fn main() {
             } else if ev.id == update_check_id {
                 if update_check_in_progress {
                     // Already checking — ignore.
-                } else if let Some(ref info) = pending_update {
-                    // Update is available → download & apply stub: just show info.
-                    update_check_item.set_text(&format!(
-                        "Update {} → download at:\n{}",
-                        info.version_label, info.download_url
-                    ));
-                    update_check_item.set_enabled(true);
-                    pending_update = None;
+                } else if let Some(prepared) = prepared_update.take() {
+                    match update::install_prepared_update(prepared) {
+                        update::ApplyOutcome::RestartRequired => {
+                            update_check_item.set_text("Restarting to finish update\u{2026}");
+                            update_check_item.set_enabled(false);
+                            *control_flow = ControlFlow::Exit;
+                        }
+                        update::ApplyOutcome::Failed(error) => {
+                            update_check_item.set_text(&format!("Update failed: {error}"));
+                            update_check_item.set_enabled(true);
+                        }
+                    }
+                } else if let Some(info) = pending_update.take() {
+                    let version_label = info.version_label.clone();
+                    update_check_item.set_text(&format!("Downloading {}\u{2026}", version_label));
+                    update_check_item.set_enabled(false);
+                    update_check_in_progress = true;
+
+                    let proxy = proxy_upd.clone();
+                    thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new().expect("update download runtime");
+                        let client = reqwest::Client::builder()
+                            .user_agent("FutureAcademyLink/2.0")
+                            .connect_timeout(Duration::from_secs(10))
+                            .timeout(Duration::from_secs(30 * 60))
+                            .build()
+                            .expect("update download client");
+                        let progress_proxy = proxy.clone();
+                        let progress: Arc<dyn Fn(u64, u64) + Send + Sync> =
+                            Arc::new(move |received, total| {
+                                let _ = progress_proxy
+                                    .send_event(UserEvent::UpdateProgress { received, total });
+                            });
+
+                        let result = match rt.block_on(update::download_update(
+                            &client,
+                            &info,
+                            Some(progress),
+                        )) {
+                            update::DownloadOutcome::Downloaded(bytes) => {
+                                update::prepare_update(&bytes)
+                            }
+                            update::DownloadOutcome::Failed(error) => Err(error),
+                        };
+                        let _ = proxy.send_event(UserEvent::UpdatePrepared {
+                            version_label,
+                            result,
+                        });
+                    });
                 } else {
                     // Manual trigger.
                     update_check_item.set_text("Checking for updates\u{2026}");
@@ -509,17 +591,47 @@ fn main() {
                     update_check_item.set_text("Up to date");
                     update_check_item.set_enabled(true);
                     pending_update = None;
+                    prepared_update = None;
                 }
                 update::UpdateCheck::Available(info) => {
-                    update_check_item
-                        .set_text(&format!("Update to {} available \u{2192}", info.version_label));
+                    let version_label = info.version_label.clone();
+                    update_check_item.set_text(&format!("Update to {} \u{2192}", version_label));
                     update_check_item.set_enabled(true);
                     pending_update = Some(info);
+                    prepared_update = None;
                 }
                 update::UpdateCheck::Error(e) => {
                     update_check_item.set_text(&format!("Update failed: {e}"));
                     update_check_item.set_enabled(true);
                     pending_update = None;
+                }
+            }
+        } else if let Event::UserEvent(UserEvent::UpdateProgress { received, total }) = event {
+            if total > 0 {
+                let percent = received.saturating_mul(100) / total;
+                update_check_item.set_text(&format!("Downloading update\u{2026} {}%", percent));
+            } else {
+                update_check_item.set_text(&format!(
+                    "Downloading update\u{2026} {} KB",
+                    received / 1024
+                ));
+            }
+        } else if let Event::UserEvent(UserEvent::UpdatePrepared {
+            version_label,
+            result,
+        }) = event
+        {
+            update_check_in_progress = false;
+            match result {
+                Ok(prepared) => {
+                    prepared_update = Some(prepared);
+                    update_check_item
+                        .set_text(&format!("Restart to install {} \u{2192}", version_label));
+                    update_check_item.set_enabled(true);
+                }
+                Err(error) => {
+                    update_check_item.set_text(&format!("Update failed: {error}"));
+                    update_check_item.set_enabled(true);
                 }
             }
         }

@@ -1,16 +1,20 @@
 //! OTA self-update module.
 //!
-//! Checks the GitHub Releases API for a newer version of the tray binary,
-//! downloads the matching platform archive, verifies its SHA256, extracts
-//! the binary, swaps it with the current executable, and restarts.
+//! Checks the configured R2 OTA manifest for a newer version of the tray
+//! binary, with GitHub Releases as a fallback. Downloads the matching platform
+//! archive, verifies its SHA256, extracts the binary, swaps it with the current
+//! executable, and restarts.
 //!
 //! Release asset naming on GitHub:
 //! - `FutureAcademy-win.zip`    → Windows
 //! - `FutureAcademy-arm64.zip`  → macOS Apple Silicon
 //! - `FutureAcademy-intel.zip`  → macOS Intel
 
-use std::io::{BufWriter, Cursor, Write};
+#[cfg(target_os = "windows")]
+use std::io::BufWriter;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use reqwest::Client;
@@ -37,6 +41,21 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct OtaManifest {
+    schema_version: u32,
+    version: String,
+    assets: Vec<OtaAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OtaAsset {
+    name: String,
+    url: String,
+    sha256: String,
+    size: Option<u64>,
+}
+
 // ── Public types ────────────────────────────────────────────────────────────
 
 /// Result of checking for an update.
@@ -53,7 +72,7 @@ pub enum UpdateCheck {
 /// Describes an available update.
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
-    /// Version tag from GitHub, e.g. `"2.0.6"` (the `v` prefix is stripped).
+    /// Remote version, e.g. `"2.0.8"` (any `v` prefix is stripped).
     pub version: String,
     /// Human-readable label, e.g. `"v2.0.6"`.
     pub version_label: String,
@@ -82,6 +101,50 @@ pub enum ApplyOutcome {
     RestartRequired,
     /// Something went wrong.
     Failed(String),
+}
+
+/// A verified update staged on disk and waiting for user-confirmed restart.
+#[derive(Debug)]
+pub struct PreparedUpdate {
+    plan: Option<PreparedPlatformUpdate>,
+}
+
+#[derive(Debug)]
+enum PreparedPlatformUpdate {
+    #[cfg(target_os = "macos")]
+    MacOS {
+        app_bundle: PathBuf,
+        staged_bundle: PathBuf,
+        backup_bundle: PathBuf,
+        staging_container: PathBuf,
+    },
+    #[cfg(target_os = "windows")]
+    Windows {
+        current_executable: PathBuf,
+        staged_executable: PathBuf,
+    },
+}
+
+impl Drop for PreparedUpdate {
+    fn drop(&mut self) {
+        let Some(plan) = self.plan.as_ref() else {
+            return;
+        };
+        match plan {
+            #[cfg(target_os = "macos")]
+            PreparedPlatformUpdate::MacOS {
+                staging_container, ..
+            } => {
+                let _ = std::fs::remove_dir_all(staging_container);
+            }
+            #[cfg(target_os = "windows")]
+            PreparedPlatformUpdate::Windows {
+                staged_executable, ..
+            } => {
+                let _ = std::fs::remove_file(staged_executable);
+            }
+        }
+    }
 }
 
 // ── Platform helpers ────────────────────────────────────────────────────────
@@ -135,14 +198,35 @@ fn is_newer(local: &str, remote: &str) -> bool {
     }
 }
 
+fn ota_manifest_url() -> Option<&'static str> {
+    option_env!("OTA_MANIFEST_URL")
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/// Check the GitHub releases API for a newer version.
+/// Check the configured OTA source for a newer version.
 ///
 /// Called from the async runtime thread (or a blocking context via
 /// `tokio::task::spawn_blocking`). Returns an `UpdateCheck` variant.
 pub async fn check_for_update(client: &Client) -> UpdateCheck {
-    let url = "https://api.github.com/repos/Kannoki/scratch-devices-link-lib/releases/latest";
+    if let Some(url) = ota_manifest_url() {
+        match check_ota_manifest(client, url).await {
+            UpdateCheck::Error(error) => {
+                tracing::warn!(
+                    "[update] R2 manifest check failed, falling back to GitHub: {}",
+                    error
+                );
+            }
+            result => return result,
+        }
+    }
+
+    check_github_release(client).await
+}
+
+async fn check_ota_manifest(client: &Client, url: &str) -> UpdateCheck {
     let local_ver = env!("CARGO_PKG_VERSION");
 
     let resp = match client
@@ -154,11 +238,75 @@ pub async fn check_for_update(client: &Client) -> UpdateCheck {
     {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            return UpdateCheck::Error(format!(
-                "GitHub API returned HTTP {}",
-                r.status()
-            ))
+            return UpdateCheck::Error(format!("R2 OTA manifest returned HTTP {}", r.status()))
         }
+        Err(e) => return UpdateCheck::Error(format!("R2 OTA manifest request failed: {e}")),
+    };
+
+    let manifest: OtaManifest = match resp.json().await {
+        Ok(manifest) => manifest,
+        Err(e) => return UpdateCheck::Error(format!("Failed to parse R2 OTA manifest: {e}")),
+    };
+
+    if manifest.schema_version != 1 {
+        return UpdateCheck::Error(format!(
+            "Unsupported R2 OTA manifest schema: {}",
+            manifest.schema_version
+        ));
+    }
+
+    if !is_newer(local_ver, &manifest.version) {
+        return UpdateCheck::UpToDate;
+    }
+
+    let target_name = platform_asset_name();
+    let asset = match manifest
+        .assets
+        .iter()
+        .find(|asset| asset.name == target_name)
+    {
+        Some(asset) => asset,
+        None => {
+            return UpdateCheck::Error(format!(
+                "No R2 OTA asset found for platform ({}) in release v{}",
+                target_name, manifest.version
+            ));
+        }
+    };
+
+    if !asset.url.starts_with("https://") {
+        return UpdateCheck::Error(format!("R2 OTA asset URL must use HTTPS: {}", asset.url));
+    }
+
+    if asset.sha256.len() != 64 || !asset.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return UpdateCheck::Error(format!(
+            "R2 OTA asset has an invalid SHA256 digest: {}",
+            asset.name
+        ));
+    }
+
+    UpdateCheck::Available(UpdateInfo {
+        version: manifest.version.clone(),
+        version_label: format!("v{}", manifest.version),
+        download_url: asset.url.clone(),
+        sha256: Some(asset.sha256.clone()),
+        size: asset.size,
+    })
+}
+
+async fn check_github_release(client: &Client) -> UpdateCheck {
+    let url = "https://api.github.com/repos/itsmehoaq/scratch-devices-link-lib/releases/latest";
+    let local_ver = env!("CARGO_PKG_VERSION");
+
+    let resp = match client
+        .get(url)
+        .header("User-Agent", "FutureAcademyLink/2.0")
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => return UpdateCheck::Error(format!("GitHub API returned HTTP {}", r.status())),
         Err(e) => {
             return UpdateCheck::Error(format!("GitHub API request failed: {e}"));
         }
@@ -169,7 +317,10 @@ pub async fn check_for_update(client: &Client) -> UpdateCheck {
         Err(e) => return UpdateCheck::Error(format!("Failed to parse release JSON: {e}")),
     };
 
-    let remote_tag = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name);
+    let remote_tag = release
+        .tag_name
+        .strip_prefix('v')
+        .unwrap_or(&release.tag_name);
 
     if !is_newer(local_ver, remote_tag) {
         return UpdateCheck::UpToDate;
@@ -212,12 +363,7 @@ pub async fn download_update(
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            return DownloadOutcome::Failed(format!(
-                "Download returned HTTP {}",
-                r.status()
-            ))
-        }
+        Ok(r) => return DownloadOutcome::Failed(format!("Download returned HTTP {}", r.status())),
         Err(e) => return DownloadOutcome::Failed(format!("Download failed: {e}")),
     };
 
@@ -240,7 +386,10 @@ pub async fn download_update(
     }
 
     // Verify SHA256 if the release provides a digest.
-    if let Some(ref expected_hex) = info.sha256 {
+    if let Some(ref expected_digest) = info.sha256 {
+        let expected_hex = expected_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(expected_digest);
         let mut hasher = Sha256::new();
         hasher.update(&body);
         let actual_hex = hex::encode(hasher.finalize());
@@ -256,27 +405,238 @@ pub async fn download_update(
     DownloadOutcome::Downloaded(body)
 }
 
-/// Extract the new binary from the downloaded zip and stage it beside the
-/// current executable (as `FutureAcademyTray.new` / `.new.exe`).
-///
-/// This does NOT replace the running binary — the caller should signal a
-/// restart so a short-lived launcher (or a restart wrapper) can perform the
-/// final swap.
-pub fn apply_update(archive_bytes: &[u8]) -> ApplyOutcome {
+/// Verify and stage an update without changing the running application.
+pub fn prepare_update(archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
+    prepare_update_for_platform(archive_bytes)
+}
+
+/// Start a detached helper that swaps a prepared update after this process
+/// exits and then relaunches the application.
+pub fn install_prepared_update(mut prepared: PreparedUpdate) -> ApplyOutcome {
+    let Some(plan) = prepared.plan.take() else {
+        return ApplyOutcome::Failed("Prepared update has already been consumed".to_string());
+    };
+    install_prepared_for_platform(plan)
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
+    let exe = current_exe();
+    let app_bundle = match exe
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("app"))
+    {
+        Some(path) => path.to_path_buf(),
+        None => {
+            return Err(format!(
+                "Running executable is not inside a macOS app bundle: {}",
+                exe.display()
+            ));
+        }
+    };
+
+    let install_parent = match app_bundle.parent() {
+        Some(path) => path,
+        None => return Err("App bundle has no parent directory".to_string()),
+    };
+    let staging_container =
+        install_parent.join(format!(".future-academy-update-{}", std::process::id()));
+    if staging_container.exists() {
+        if let Err(error) = std::fs::remove_dir_all(&staging_container) {
+            return Err(format!("Failed to clear update staging: {error}"));
+        }
+    }
+    if let Err(error) = std::fs::create_dir_all(&staging_container) {
+        return Err(format!("Failed to create update staging: {error}"));
+    }
+
+    if let Err(error) = extract_zip_archive(archive_bytes, &staging_container) {
+        let _ = std::fs::remove_dir_all(&staging_container);
+        return Err(error);
+    }
+
+    let staged_bundle = match find_staged_app_bundle(&staging_container) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging_container);
+            return Err(error);
+        }
+    };
+
+    let staged_executable = staged_bundle
+        .join("Contents")
+        .join("MacOS")
+        .join("FutureAcademyTray");
+    if !staged_executable.is_file() {
+        let _ = std::fs::remove_dir_all(&staging_container);
+        return Err(format!(
+            "Staged macOS app is missing {}",
+            staged_executable.display()
+        ));
+    }
+
+    let signature_valid = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(&staged_bundle)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !signature_valid {
+        let _ = std::fs::remove_dir_all(&staging_container);
+        return Err("Staged macOS app failed code-signature verification".to_string());
+    }
+
+    let backup_bundle = install_parent.join(format!(
+        "{}.previous",
+        app_bundle
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Future Academy Link.app")
+    ));
+
+    tracing::info!("[update] prepared macOS app at {}", staged_bundle.display());
+    Ok(PreparedUpdate {
+        plan: Some(PreparedPlatformUpdate::MacOS {
+            app_bundle,
+            staged_bundle,
+            backup_bundle,
+            staging_container,
+        }),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn install_prepared_for_platform(plan: PreparedPlatformUpdate) -> ApplyOutcome {
+    let PreparedPlatformUpdate::MacOS {
+        app_bundle,
+        staged_bundle,
+        backup_bundle,
+        staging_container,
+    } = plan;
+    let helper_script = r#"
+pid="$1"
+current="$2"
+staged="$3"
+backup="$4"
+container="$5"
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+rm -rf "$backup"
+if mv "$current" "$backup" && mv "$staged" "$current"; then
+    rm -rf "$backup" "$container"
+    open "$current"
+else
+    if [ -e "$backup" ] && [ ! -e "$current" ]; then mv "$backup" "$current"; fi
+    exit 1
+fi
+"#;
+
+    let spawn_result = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(helper_script)
+        .arg("future-academy-updater")
+        .arg(std::process::id().to_string())
+        .arg(&app_bundle)
+        .arg(&staged_bundle)
+        .arg(&backup_bundle)
+        .arg(&staging_container)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    match spawn_result {
+        Ok(_) => {
+            tracing::info!(
+                "[update] staged macOS app at {} and scheduled restart",
+                staged_bundle.display()
+            );
+            ApplyOutcome::RestartRequired
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging_container);
+            ApplyOutcome::Failed(format!("Failed to start macOS update helper: {error}"))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn extract_zip_archive(archive_bytes: &[u8], destination: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cursor = Cursor::new(archive_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|error| format!("Failed to open update zip: {error}"))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Failed to read update zip entry: {error}"))?;
+        let relative_path = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("Unsafe path in update zip: {}", entry.name()))?;
+        let output_path = destination.join(relative_path);
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output_path)
+                .map_err(|error| format!("Failed to create update directory: {error}"))?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Failed to create update directory: {error}"))?;
+        }
+        let mut output = std::fs::File::create(&output_path)
+            .map_err(|error| format!("Failed to create staged update file: {error}"))?;
+        std::io::copy(&mut entry, &mut output)
+            .map_err(|error| format!("Failed to extract staged update file: {error}"))?;
+        output
+            .flush()
+            .map_err(|error| format!("Failed to flush staged update file: {error}"))?;
+
+        if let Some(mode) = entry.unix_mode() {
+            std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(mode))
+                .map_err(|error| format!("Failed to set staged file permissions: {error}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn find_staged_app_bundle(staging_container: &Path) -> Result<PathBuf, String> {
+    let entries = std::fs::read_dir(staging_container)
+        .map_err(|error| format!("Failed to inspect staged update: {error}"))?;
+    let app_bundles: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir() && path.extension().and_then(|ext| ext.to_str()) == Some("app")
+        })
+        .collect();
+
+    if app_bundles.len() != 1 {
+        return Err(format!(
+            "Expected one app bundle in update zip, found {}",
+            app_bundles.len()
+        ));
+    }
+    Ok(app_bundles[0].clone())
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
+    const BIN_NAME: &str = "FutureAcademyTray.exe";
+
     let exe = current_exe();
     let parent = exe.parent().unwrap_or(Path::new("."));
 
-    // The zip has the binary name for this platform.
-    #[cfg(target_os = "windows")]
-    const BIN_NAME: &str = "FutureAcademyTray.exe";
-    #[cfg(not(target_os = "windows"))]
-    const BIN_NAME: &str = "FutureAcademyTray";
-
-    // Read the zip from memory.
     let cursor = Cursor::new(archive_bytes);
     let mut archive = match zip::ZipArchive::new(cursor) {
         Ok(a) => a,
-        Err(e) => return ApplyOutcome::Failed(format!("Failed to open update zip: {e}")),
+        Err(e) => return Err(format!("Failed to open update zip: {e}")),
     };
 
     // Find the binary inside the zip. It may be at the root or inside
@@ -294,16 +654,13 @@ pub fn apply_update(archive_bytes: &[u8]) -> ApplyOutcome {
     let idx = match bin_index {
         Some(i) => i,
         None => {
-            return ApplyOutcome::Failed(format!(
-                "Binary '{}' not found in update zip",
-                BIN_NAME
-            ));
+            return Err(format!("Binary '{}' not found in update zip", BIN_NAME));
         }
     };
 
     let mut entry = match archive.by_index(idx) {
         Ok(e) => e,
-        Err(e) => return ApplyOutcome::Failed(format!("Failed to read zip entry: {e}")),
+        Err(e) => return Err(format!("Failed to read zip entry: {e}")),
     };
 
     // Stage next to the current exe as `.new`.
@@ -315,36 +672,216 @@ pub fn apply_update(archive_bytes: &[u8]) -> ApplyOutcome {
         let file = match std::fs::File::create(&staging_path) {
             Ok(f) => f,
             Err(e) => {
-                return ApplyOutcome::Failed(format!(
-                    "Failed to create staging file: {e}"
-                ));
+                return Err(format!("Failed to create staging file: {e}"));
             }
         };
         let mut writer = BufWriter::new(file);
         if let Err(e) = std::io::copy(&mut entry, &mut writer) {
             let _ = std::fs::remove_file(&staging_path);
-            return ApplyOutcome::Failed(format!("Failed to extract binary: {e}"));
+            return Err(format!("Failed to extract binary: {e}"));
         }
         if let Err(e) = writer.flush() {
             let _ = std::fs::remove_file(&staging_path);
-            return ApplyOutcome::Failed(format!("Failed to flush binary: {e}"));
-        }
-    }
-
-    // Make it executable on Unix.
-    #[cfg(not(target_os = "windows"))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o755)) {
-            let _ = std::fs::remove_file(&staging_path);
-            return ApplyOutcome::Failed(format!("Failed to set executable bit: {e}"));
+            return Err(format!("Failed to flush binary: {e}"));
         }
     }
 
     tracing::info!(
-        "[update] staged new binary at {}",
+        "[update] prepared Windows executable at {}",
         staging_path.display()
     );
+    Ok(PreparedUpdate {
+        plan: Some(PreparedPlatformUpdate::Windows {
+            current_executable: exe,
+            staged_executable: staging_path,
+        }),
+    })
+}
 
+#[cfg(target_os = "windows")]
+fn install_prepared_for_platform(plan: PreparedPlatformUpdate) -> ApplyOutcome {
+    let PreparedPlatformUpdate::Windows {
+        current_executable: exe,
+        staged_executable: staging_path,
+    } = plan;
+
+    let helper_path =
+        std::env::temp_dir().join(format!("future-academy-updater-{}.ps1", std::process::id()));
+    let helper_script = r#"param(
+    [int]$ProcessToWait,
+    [string]$CurrentExecutable,
+    [string]$StagedExecutable
+)
+$ErrorActionPreference = 'Stop'
+Wait-Process -Id $ProcessToWait -ErrorAction SilentlyContinue
+$BackupExecutable = "$CurrentExecutable.previous"
+$MovedCurrent = $false
+for ($attempt = 1; $attempt -le 30; $attempt++) {
+    try {
+        if (Test-Path $BackupExecutable) { Remove-Item -Force $BackupExecutable }
+        Move-Item -Force $CurrentExecutable $BackupExecutable
+        $MovedCurrent = $true
+        break
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+if (!$MovedCurrent) { exit 1 }
+try {
+    Move-Item -Force $StagedExecutable $CurrentExecutable
+    Start-Process $CurrentExecutable
+    Remove-Item -Force $BackupExecutable
+    Remove-Item -Force $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
+    exit 0
+} catch {
+    if (Test-Path $CurrentExecutable) { Remove-Item -Force $CurrentExecutable }
+    if (Test-Path $BackupExecutable) {
+        Move-Item -Force $BackupExecutable $CurrentExecutable
+        Start-Process $CurrentExecutable -ErrorAction SilentlyContinue
+    }
+    exit 1
+}
+"#;
+
+    if let Err(error) = std::fs::write(&helper_path, helper_script) {
+        let _ = std::fs::remove_file(&staging_path);
+        return ApplyOutcome::Failed(format!("Failed to create Windows update helper: {error}"));
+    }
+
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut helper_command = Command::new("powershell.exe");
+    helper_command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+        ])
+        .arg(&helper_path)
+        .arg("-ProcessToWait")
+        .arg(std::process::id().to_string())
+        .arg("-CurrentExecutable")
+        .arg(&exe)
+        .arg("-StagedExecutable")
+        .arg(&staging_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    helper_command.creation_flags(CREATE_NO_WINDOW);
+    let spawn_result = helper_command.spawn();
+
+    if let Err(error) = spawn_result {
+        let _ = std::fs::remove_file(&helper_path);
+        let _ = std::fs::remove_file(&staging_path);
+        return ApplyOutcome::Failed(format!("Failed to start Windows update helper: {error}"));
+    }
+
+    tracing::info!(
+        "[update] staged Windows executable at {} and scheduled restart",
+        staging_path.display()
+    );
     ApplyOutcome::RestartRequired
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn prepare_update_for_platform(_archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
+    Err("Automatic updates are unsupported on this platform".to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn install_prepared_for_platform(_plan: PreparedPlatformUpdate) -> ApplyOutcome {
+    ApplyOutcome::Failed("Automatic updates are unsupported on this platform".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_newer, parse_version, OtaManifest};
+
+    #[test]
+    fn parses_stable_versions_with_optional_v_prefix() {
+        assert_eq!(parse_version("2.0.7"), Some((2, 0, 7)));
+        assert_eq!(parse_version("v2.0.7"), Some((2, 0, 7)));
+        assert_eq!(parse_version("2.0"), None);
+    }
+
+    #[test]
+    fn only_accepts_strictly_newer_versions() {
+        assert!(is_newer("2.0.6", "2.0.7"));
+        assert!(is_newer("2.0.6", "3.0.0"));
+        assert!(!is_newer("2.0.6", "2.0.6"));
+        assert!(!is_newer("2.0.6", "1.9.9"));
+    }
+
+    #[test]
+    fn parses_generated_ota_manifest_contract() {
+        let manifest: OtaManifest = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "version": "2.0.7",
+                "published_at": "2026-07-10T00:00:00.000Z",
+                "assets": [{
+                    "name": "FutureAcademy-win.zip",
+                    "url": "https://updates.example.com/ota/releases/v2.0.7/FutureAcademy-win.zip",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "size": 123
+                }]
+            }"#,
+        )
+        .expect("generated manifest should deserialize");
+
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.version, "2.0.7");
+        assert_eq!(manifest.assets[0].name, "FutureAcademy-win.zip");
+        assert_eq!(manifest.assets[0].size, Some(123));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extracts_complete_macos_app_bundle() {
+        use super::{extract_zip_archive, find_staged_app_bundle};
+        use std::io::{Cursor, Write};
+        use std::os::unix::fs::PermissionsExt;
+        use zip::write::SimpleFileOptions;
+
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let directory_options = SimpleFileOptions::default().unix_permissions(0o755);
+        let executable_options = SimpleFileOptions::default().unix_permissions(0o755);
+        writer
+            .add_directory("Future Academy Link.app/Contents/MacOS/", directory_options)
+            .expect("add app directory");
+        writer
+            .start_file(
+                "Future Academy Link.app/Contents/MacOS/FutureAcademyTray",
+                executable_options,
+            )
+            .expect("add app executable");
+        writer
+            .write_all(b"test executable")
+            .expect("write app executable");
+        let archive_bytes = writer.finish().expect("finish test zip").into_inner();
+
+        let destination = std::env::temp_dir().join(format!(
+            "future-academy-extract-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(&destination).expect("create test destination");
+
+        extract_zip_archive(&archive_bytes, &destination).expect("extract app bundle");
+        let app_bundle = find_staged_app_bundle(&destination).expect("find app bundle");
+        let executable = app_bundle
+            .join("Contents")
+            .join("MacOS")
+            .join("FutureAcademyTray");
+        assert_eq!(std::fs::read(&executable).unwrap(), b"test executable");
+        assert_ne!(
+            std::fs::metadata(&executable).unwrap().permissions().mode() & 0o111,
+            0
+        );
+
+        std::fs::remove_dir_all(&destination).expect("remove test destination");
+    }
 }
