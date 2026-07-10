@@ -150,3 +150,8 @@ ota/releases/v2.0.7/FutureAcademy-intel.zip
 `OTA_MANIFEST_URL` is compiled into release binaries. If it is absent, the
 binary uses GitHub Releases directly. R2 publishing is disabled when all six
 values are absent, and CI fails early if only part of the configuration exists.
+
+When a newer manifest is detected, the running app downloads the matching
+platform archive, verifies its SHA-256 digest, stages the replacement, exits,
+and relaunches automatically. macOS swaps the complete signed `.app` bundle;
+Windows swaps the running executable through a detached PowerShell helper.

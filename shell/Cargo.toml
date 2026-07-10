@@ -1,6 +1,6 @@
 [package]
 name = "future-academy-tray"
-version = "2.0.7"
+version = "2.0.8"
 edition = "2021"
 description = "Future Academy Link tray shell + local hardware link server (single binary, no Node runtime)."
 license = "MIT"
