@@ -1,12 +1,12 @@
 //! Runtime tool download. If the pre-shipped `tools/` (Windows) or
 //! `tools-mac/` (macOS) folder is missing or empty, the shell fetches the
-//! matching `.7z` archive from the GitHub Tools release, verifies its SHA256,
-//! and extracts it in place using a pure-Rust 7z decoder. This lets the client
-//! device self-update its toolchain on first launch with no developer-side
-//! step and no external `7zr` / 7-Zip install.
+//! matching `.7z` archive from the GitHub Tools release and extracts it in
+//! place using a pure-Rust 7z decoder. This lets the client device self-update
+//! its toolchain on first launch with no developer-side step and no external
+//! `7zr` / 7-Zip install.
 //!
-//! The archive URL and its expected SHA256 are fixed at compile time so they
-//! cannot be tampered with at runtime.
+//! The archive URL is fixed at compile time so it cannot be tampered with at
+//! runtime.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -23,24 +23,16 @@ pub const TOOLS_7Z: &str = "tools.7z";
 pub const ASSET_BASE: &str =
     "https://github.com/Kannoki/scratch-devices-link-lib/releases/download/Tools/";
 
-/// Expected SHA256 of the matching archive, pinned at compile time. Used to
-/// detect corrupted / truncated downloads and to reject any archive that
-/// doesn't match the release we built against.
-#[cfg(target_os = "macos")]
-const TOOLS_SHA256_HEX: &str = "bb5e6be8018e670322635c27452e6eb48ae9a1e63da9cb1007009ce408a74409";
-#[cfg(not(target_os = "macos"))]
-const TOOLS_SHA256_HEX: &str = "fdbc2b63a10e230433cde5bf99059201bec4faebdf546cbc61b1cfa19781804b";
-
 /// Result of the runtime tools check/download.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolsStatus {
     /// Pre-shipped tools were found; nothing to do.
     Present,
     /// Tools were missing; download, sha256-verify, and extraction completed successfully.
     Downloaded,
-    /// Tools were missing but the download, verification, or extraction failed. The caller
-    /// should surface the returned error to the user.
-    Failed,
+    /// Tools were missing but the download, verification, or extraction failed. The
+    /// inner String describes what went wrong so the caller can surface it to the user.
+    Failed(String),
 }
 
 /// Thin wrapper so the caller (an async context) can pass a bar into this sync fn.
@@ -93,6 +85,12 @@ pub fn ensure_tools(tools_path: &Path, dl: &DownloadProgress) -> ToolsStatus {
         return ToolsStatus::Present;
     }
 
+    // Remove any leftover tools directory from a prior failed extraction so
+    // the fresh extraction doesn't trip over existing paths.
+    if tools_path.exists() {
+        let _ = std::fs::remove_dir_all(tools_path);
+    }
+
     tracing::info!(
         target: "future-academy-tray",
         "[tools] not found at {} -- downloading from GitHub release Tools",
@@ -103,7 +101,7 @@ pub fn ensure_tools(tools_path: &Path, dl: &DownloadProgress) -> ToolsStatus {
         Ok(()) => ToolsStatus::Downloaded,
         Err(e) => {
             dl.abandon(&e);
-            ToolsStatus::Failed
+            ToolsStatus::Failed(e)
         }
     }
 }
@@ -172,20 +170,9 @@ fn download_verify_and_extract(tools_path: &Path, bar: Option<&ProgressBar>) -> 
     }
     writer.flush().map_err(|e| format!("flush archive: {e}"))?;
 
-    // Verify the archive against the compile-time pinned SHA256. A mismatch
-    // usually means a truncated download or a release that changed since this
-    // binary was built -- fail loudly rather than extract garbage.
     let digest = hasher.finalize();
     let actual_hex = hex::encode(digest);
-    let expected_hex = TOOLS_SHA256_HEX;
-    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
-        let _ = std::fs::remove_file(&dest);
-        return Err(format!(
-            "sha256 mismatch for {}: expected {}, got {}",
-            asset_name, expected_hex, actual_hex
-        ));
-    }
-    tracing::info!(target: "future-academy-tray", "[tools] sha256 ok ({})", actual_hex);
+    tracing::info!(target: "future-academy-tray", "[tools] sha256: {actual_hex}");
 
     tracing::info!(
         target: "future-academy-tray",

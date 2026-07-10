@@ -874,8 +874,8 @@ async fn setup_inner(
             // Just finish the bar cleanly.
             dl.finish_ok("Downloaded");
         }
-        download::ToolsStatus::Failed => {
-            return Err("tools download/fetch failed".to_string());
+        download::ToolsStatus::Failed(msg) => {
+            return Err(format!("tools download/fetch failed: {msg}"));
         }
     }
 
