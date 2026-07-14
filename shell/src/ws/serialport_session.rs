@@ -570,7 +570,7 @@ impl SerialportSession {
                     };
                     match read {
                         Ok(0) => {
-                            std::thread::sleep(Duration::from_millis(5));
+                            std::thread::sleep(Duration::from_millis(20));
                         }
                         Ok(n) => {
                             if tx.send(SerialEvent::Data(buf[..n].to_vec())).is_err() {
@@ -1525,17 +1525,36 @@ async fn run_esp32_flash(
 }
 
 /// Bridge the session abort flag → the tool's own abort flag.
+/// When called from within a tokio runtime (including spawn_blocking threads),
+/// spawns a lightweight async task. Otherwise falls back to a dedicated OS thread.
 fn spawn_abort_bridge(external: Arc<AtomicBool>, tool: Arc<AtomicBool>) {
-    std::thread::spawn(move || loop {
-        if external.load(Ordering::Relaxed) {
-            tool.store(true, Ordering::Relaxed);
-            break;
-        }
-        if tool.load(Ordering::Relaxed) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    });
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        // Async path: spawn a cheap tokio task instead of burning an OS thread.
+        handle.spawn(async move {
+            loop {
+                if external.load(Ordering::Relaxed) {
+                    tool.store(true, Ordering::Relaxed);
+                    break;
+                }
+                if tool.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+    } else {
+        // Fallback: no tokio runtime available (shouldn't happen in practice).
+        std::thread::spawn(move || loop {
+            if external.load(Ordering::Relaxed) {
+                tool.store(true, Ordering::Relaxed);
+                break;
+            }
+            if tool.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        });
+    }
 }
 
 /// Build a `sendstd`-shaped closure that emits `uploadStdout` notifications.

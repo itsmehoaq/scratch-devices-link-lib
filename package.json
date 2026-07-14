@@ -1,6 +1,6 @@
 {
   "name": "windify-block",
-  "version": "2.0.11",
+  "version": "2.0.12",
   "description": "Future Academy Link tray shell (single Rust binary, no Node runtime, no embedded server).",
   "scripts": {
     "apply:gui-exe-icon": "node script/apply-gui-exe-icon.js",
