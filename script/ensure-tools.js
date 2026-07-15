@@ -7,7 +7,9 @@ const fs = require('fs');
 const path = require('path');
 
 const repoRoot = path.resolve(__dirname, '..');
-const toolsRoot = path.join(repoRoot, 'tools');
+const toolsRoot = process.platform === 'win32'
+    ? 'C:\\futureacademy\\tools'
+    : path.join(repoRoot, 'tools');
 const firmwaresRoot = path.join(repoRoot, 'firmwares');
 const arduinoCli = path.join(toolsRoot, 'Arduino', 'arduino-cli.exe');
 
@@ -47,7 +49,7 @@ if (!fetchSmallOk) {
 if (!hasTools()) {
     console.error(`[ensure:tools] Still missing ${arduinoCli}`);
     console.error('Copy an existing tools folder:');
-    console.error('  set WINDY_TOOLS_SOURCE=C:\\Program Files\\Future Academy\\tools');
+    console.error('  set WINDY_TOOLS_SOURCE=C:\\futureacademy\\tools');
     console.error('Or provide a local archive:');
     console.error('  set TOOLS_7Z_PATH=D:\\path\\to\\tools.7z');
     process.exit(1);

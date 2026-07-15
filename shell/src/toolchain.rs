@@ -15,7 +15,6 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 
 use crate::download;
-use crate::progress::Spinner;
 
 pub const ESP32_INDEX_URL: &str =
     "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json";
@@ -822,9 +821,9 @@ pub async fn setup_toolchain(
 
 async fn setup_inner(
     arduino_dir: &Path,
-    cli_path: &Path,
-    config_path: &Path,
-    tmp_dir: &Path,
+    _cli_path: &Path,
+    _config_path: &Path,
+    _tmp_dir: &Path,
     report: &ProgressFn,
 ) -> Result<(), String> {
     let phase = |phase: &str, progress: u8| {

@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::toolchain::CLI_FILE;
+
 #[cfg(windows)]
 const INSTALL_REGISTRY_KEY: &str = r"Software\Windify\Future Academy";
 
@@ -150,16 +152,25 @@ pub fn resolve_user_data_path(base_dir: &Path) -> PathBuf {
 /// Read installer registry values (Windows only). Port of `readInstallRegistry`.
 #[cfg(windows)]
 pub fn read_install_registry() -> Option<(Option<String>, Option<String>)> {
-    use winreg::enums::HKEY_LOCAL_MACHINE;
-    use winreg::RegKey;
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let key = hklm.open_subkey(INSTALL_REGISTRY_KEY).ok()?;
-    let install_path: Option<String> = key.get_value("InstallPath").ok();
-    let tools_path: Option<String> = key.get_value("ToolsPath").ok();
-    if install_path.is_none() && tools_path.is_none() {
-        return None;
-    }
-    Some((install_path, tools_path))
+    // Run the whole registry read inside a catch_unwind guard. The winreg crate can
+    // panic on malformed or unexpected registry value types (e.g. REG_LINK with
+    // UTF-16 null terminators). Since this function is only a best-effort fallback
+    // anyway, returning None on any error is safe.
+    let result: Option<(Option<String>, Option<String>)> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        use winreg::RegKey;
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let key = hklm.open_subkey(INSTALL_REGISTRY_KEY).ok()?;
+        let install_path: Option<String> = key.get_value("InstallPath").ok();
+        let tools_path: Option<String> = key.get_value("ToolsPath").ok();
+        if install_path.is_none() && tools_path.is_none() {
+            return None;
+        }
+        Some((install_path, tools_path))
+    }))
+    .ok()
+    .flatten();
+    result
 }
 
 #[cfg(not(windows))]
@@ -181,10 +192,20 @@ pub fn resolve_tools_path(base_dir: &Path) -> PathBuf {
         return resolve_user_data_path(base_dir).join("tools");
     }
 
-    let local_tools = base_dir.join("tools");
-    let local_cli = resolve_tool_binary(&local_tools, "Arduino/arduino-cli");
-    if local_cli.exists() {
-        return local_tools;
+    // Windows: use the fixed C:\futureacademy\tools location.
+    #[cfg(windows)]
+    {
+        let futureacademy_tools = PathBuf::from(r"C:\futureacademy\tools");
+        if futureacademy_tools.join("Arduino").join(CLI_FILE).exists() {
+            return futureacademy_tools;
+        }
+
+        // Portable build: tools/ next to the executable (must exist).
+        let local_tools = base_dir.join("tools");
+        let local_cli = resolve_tool_binary(&local_tools, "Arduino/arduino-cli");
+        if local_cli.exists() {
+            return local_tools;
+        }
     }
 
     if let Some((_install, tools)) = read_install_registry() {
@@ -196,7 +217,17 @@ pub fn resolve_tools_path(base_dir: &Path) -> PathBuf {
         }
     }
 
-    local_tools
+    // Windows default: C:\futureacademy\tools
+    #[cfg(windows)]
+    {
+        return PathBuf::from(r"C:\futureacademy\tools");
+    }
+
+    // Unix / macOS fallback: tools/ next to the executable.
+    #[cfg(not(windows))]
+    {
+        base_dir.join("tools")
+    }
 }
 
 /// Result of `validate_tools_layout`.

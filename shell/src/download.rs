@@ -204,8 +204,28 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     // breaking the CLI lookup in `toolchain::check_toolchain`.
     let stage_parent = dest.parent().unwrap_or_else(|| Path::new("."));
     let stage = unique_stage_dir(stage_parent)?;
-    sevenz_rust2::decompress_file(archive, &stage)
-        .map_err(|e| format!("7z extract failed: {e}"))?;
+
+    // Run extraction in a catch_unwind guard. The sevenz_rust2 crate calls
+    // Windows APIs (CreateFile, GetFinalPathNameByHandleW) that can panic via
+    // windows-rs assertions when paths contain exotic characters or junctions.
+    let archive_owned = archive.to_path_buf();
+    let stage_owned = stage.to_path_buf();
+    let extract_result: Result<(), String> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sevenz_rust2::decompress_file(&archive_owned, &stage_owned)
+    }))
+    .map_err(|e| {
+        let msg = if let Some(s) = e.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = e.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic in sevenz_rust2".to_string()
+        };
+        format!("7z extract panicked: {msg}")
+    })
+    .and_then(|r| r.map_err(|e| format!("7z extract failed: {e}")));
+
+    extract_result?;
 
     // If the archive flattened into a single top-level dir, hoist its contents
     // up so the caller sees files directly under `dest` (the standard

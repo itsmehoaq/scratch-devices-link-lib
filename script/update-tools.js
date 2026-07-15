@@ -33,7 +33,7 @@ const targetIdx = argv.indexOf('--target');
 const onlyTarget = targetIdx >= 0 ? argv[targetIdx + 1] : null;
 
 const targets = [
-    {key: 'win', asset: 'tools.7z', extract: path.join(repoRoot, 'tools')},
+    {key: 'win', asset: 'tools.7z', extract: 'C:\\futureacademy\\tools'},
     {key: 'mac', asset: 'tools-mac.7z', extract: path.join(repoRoot, 'tools-mac')}
 ].filter(t => !onlyTarget || t.key === onlyTarget);
 
