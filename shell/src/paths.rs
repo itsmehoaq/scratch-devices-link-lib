@@ -25,9 +25,19 @@ fn home_dir() -> PathBuf {
 /// executable. There is no `process.pkg`/Electron concept; we always use the
 /// exe's parent, falling back to CWD when the exe path cannot be resolved.
 pub fn resolve_runtime_base_dir() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            return parent.to_path_buf();
+    // `std::env::current_exe()` internally calls Windows `GetFinalPathNameByHandleW`
+    // via the windows-rs crate, which can PANIC (via an assertion) when the exe path
+    // involves symlinks, junctions, or certain special filesystem paths
+    // (error code 3 = ERROR_PATH_NOT_FOUND). We run it in a join-handle thread so a
+    // panic stays contained and we fall back to CWD safely.
+    let handle = std::thread::Builder::new()
+        .spawn(std::env::current_exe)
+        .ok();
+    if let Some(handle) = handle {
+        if let Ok(Ok(exe)) = handle.join() {
+            if let Some(parent) = exe.parent() {
+                return parent.to_path_buf();
+            }
         }
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
