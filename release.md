@@ -1,5 +1,13 @@
 # Future Academy — Release Notes
 
+## Version 2.0.13
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Bug Fixes
+
+- Prevent `GetFinalPathNameByHandleW` panic on Windows when executable path involves symlinks, junctions, or special filesystem paths.
+
 ## Version 2.0.2
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
@@ -38,11 +46,11 @@ Publish to update server (from `scratch-link-server` repo): `npm run seed:releas
 
 Set `PUBLIC_BASE_URL` on the server (e.g. `http://14.225.209.18:8080`).
 
-|| Artifact | URL pattern |
+| Artifact | URL pattern |
 |----------|-------------|
-|| Installer (.exe) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-setup.exe` |
-|| Portable (.zip) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-app.zip` |
-|| Short links | `{PUBLIC_BASE_URL}/download` (exe), `{PUBLIC_BASE_URL}/download/zip` |
+| Installer (.exe) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-setup.exe` |
+| Portable (.zip) | `{PUBLIC_BASE_URL}/downloads/FutureAcademy-2.0.2-x64-app.zip` |
+| Short links | `{PUBLIC_BASE_URL}/download` (exe), `{PUBLIC_BASE_URL}/download/zip` |
 
 ### Download (offline / direct file)
 
@@ -77,5 +85,5 @@ The app starts the link server (port `11337`) and opens the editor URL.
 
 ### Uninstall
 
-Windows Settings -> Apps -> Future Academy -> Uninstall.  
+Windows Settings -> Apps -> Future Academy -> Uninstall.
 Optional cleanup: delete `%LOCALAPPDATA%\Future Academy Link`.
