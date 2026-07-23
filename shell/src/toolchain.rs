@@ -881,9 +881,10 @@ async fn setup_inner(
     // Brief spinner while the cli chmod runs (unix only).
     #[cfg(unix)]
     {
-        let spin = Spinner::new("Setting permissions...");
+        let spin = indicatif::ProgressBar::new_spinner();
+        spin.set_message("Setting permissions...");
         chmod_cli(tools_path);
-        spin.finish_ok("Permissions set");
+        spin.finish_and_clear();
     }
     #[cfg(not(unix))]
     let _ = ();

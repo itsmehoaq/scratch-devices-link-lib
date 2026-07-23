@@ -280,7 +280,7 @@ impl SerialportSession {
     // ── syncLibraries ─────────────────────────────────────────────────────
 
     /// Write bundled library files from the web app into tools/Arduino/libraries/.
-    /// Params: { libraries: { "LibName": { "LibName/file.h": "...", "LibName/file.cpp": "..." } } }
+    /// Params: { libraries: { "LibName": { "src/file.h": "...", "src/file.cpp": "..." } } }
     async fn sync_libraries(&mut self, params: &Value) -> Result<(), String> {
         let libs = params.get("libraries").and_then(|v| v.as_object()).ok_or_else(|| {
             "syncLibraries: missing 'libraries' field".to_string()
@@ -295,13 +295,19 @@ impl SerialportSession {
             if let Some(obj) = files.as_object() {
                 for (file_path, content) in obj {
                     if let Some(s) = content.as_str() {
-                        let target = lib_dir.join(file_path);
+                        // Strip "LibName/" prefix if present (file_path may include it)
+                        let relative = if let Some(rest) = file_path.strip_prefix(lib_name) {
+                            rest.trim_start_matches('/')
+                        } else {
+                            file_path.as_str()
+                        };
+                        let target = lib_dir.join(relative);
                         if let Some(parent) = target.parent() {
                             let _ = fs::create_dir_all(parent);
                         }
                         let _ = fs::write(&target, s);
                         count += 1;
-                    }
+                    }                                                                                       
                 }
             }
         }
