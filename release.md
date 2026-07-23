@@ -1,12 +1,24 @@
 # Future Academy — Release Notes
 
-## Version 2.0.13
-
+## Version 2.0.14
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
 
 ### Bug Fixes
 
 - Prevent `GetFinalPathNameByHandleW` panic on Windows when executable path involves symlinks, junctions, or special filesystem paths.
+- Fix registry read panic in `winreg` crate when encountering malformed values (e.g., `REG_LINK` with UTF-16 null terminators).
+- Fix library sync path prefix handling in serial port session — correctly strip library name prefix from file paths.
+
+### Improvements
+
+- Move tools directory to fixed `C:\futureacademy\tools` location on Windows for consistent cross-session access.
+- Add panic guards around Windows API calls (`sevenz_rust2`, `winreg`) for robustness.
+- Update installer scripts and download tools scripts to use new tools path.
+
+### Paths
+
+- Tools: `C:\futureacademy\tools\` (fixed location on Windows)
+- User data: `%LOCALAPPDATA%\Future Academy Link\`
 
 ## Version 2.0.2
 
