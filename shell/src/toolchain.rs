@@ -127,6 +127,13 @@ pub fn validate_toolchain(tools_path: &Path) -> ToolchainValidation {
     {
         missing.push(format!("ESP32-S3 compiler ({compiler_name})"));
     }
+    let frontend_name = expected_binary("cc1plus");
+    if find_file_named(&esp32_tools.join("esp-x32"), &frontend_name)
+        .filter(|path| is_executable(path))
+        .is_none()
+    {
+        missing.push(format!("ESP32-S3 C++ frontend ({frontend_name})"));
+    }
 
     if !libraries.is_dir() {
         missing.push(format!("Arduino libraries ({})", libraries.display()));
@@ -189,15 +196,15 @@ pub fn repair_executable_permissions(tools_path: &Path) -> Result<usize, String>
                 continue;
             }
 
-            let in_bin_dir = path
-                .parent()
-                .and_then(Path::file_name)
-                .is_some_and(|name| name == "bin");
+            let in_executable_tree = path.components().any(|component| {
+                let name = component.as_os_str();
+                name == "bin" || name == "libexec"
+            });
             let known_launcher = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| known_launchers.contains(&name));
-            if !in_bin_dir && !known_launcher {
+            if !in_executable_tree && !known_launcher {
                 continue;
             }
 
@@ -346,6 +353,11 @@ mod tests {
                 .join("Arduino/packages/esp32/tools/xtensa/14.2/bin")
                 .join(expected_binary("xtensa-esp32s3-elf-g++")),
         );
+        write_file(
+            &root
+                .join("Arduino/packages/esp32/tools/esp-x32/2405/libexec/gcc/xtensa-esp-elf/13.2.0")
+                .join(expected_binary("cc1plus")),
+        );
         fs::create_dir_all(root.join("Arduino/libraries/Windify")).unwrap();
         repair_executable_permissions(root).unwrap();
     }
@@ -393,11 +405,19 @@ mod tests {
         let root = test_root("tool-permissions");
         create_minimal_toolchain(&root);
         let esptool = root.join("Arduino/packages/esp32/tools/esptool_py/4.9/esptool");
+        let cc1plus = root.join(
+            "Arduino/packages/esp32/tools/esp-x32/2405/libexec/gcc/xtensa-esp-elf/13.2.0/cc1plus",
+        );
         fs::set_permissions(&esptool, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&cc1plus, fs::Permissions::from_mode(0o644)).unwrap();
         let repaired = repair_executable_permissions(&root).unwrap();
-        assert!(repaired > 0);
+        assert!(repaired >= 2);
         assert_ne!(
             fs::metadata(esptool).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        assert_ne!(
+            fs::metadata(cc1plus).unwrap().permissions().mode() & 0o111,
             0
         );
         fs::remove_dir_all(root).unwrap();

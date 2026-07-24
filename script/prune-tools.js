@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const {spawnSync} = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
 const toolsRoot = path.join(repoRoot, 'tools');
@@ -110,6 +111,54 @@ const assertRequiredPaths = () => {
     process.exit(1);
 };
 
+const findFileNamed = (root, wanted) => {
+    if (!fs.existsSync(root)) return null;
+    for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
+        const candidate = path.join(root, entry.name);
+        if (entry.isFile() && entry.name === wanted) return candidate;
+        if (entry.isDirectory()) {
+            const nested = findFileNamed(candidate, wanted);
+            if (nested) return nested;
+        }
+    }
+    return null;
+};
+
+/**
+ * A compiler driver can exist and pass `--version` while its internal
+ * `libexec/.../cc1plus` frontend is missing or unusable. Preprocessing an empty
+ * C++ source forces the driver to launch cc1plus and catches that broken
+ * package before it is archived.
+ */
+const assertEsp32CompilerUsable = () => {
+    const suffix = process.platform === 'win32' ? '.exe' : '';
+    const compilerRoot = toAbsolute('Arduino/packages/esp32/tools/esp-x32');
+    const compiler = findFileNamed(compilerRoot, `xtensa-esp32s3-elf-g++${suffix}`);
+    const frontend = findFileNamed(compilerRoot, `cc1plus${suffix}`);
+    const missing = [];
+    if (!compiler) missing.push(`xtensa-esp32s3-elf-g++${suffix}`);
+    if (!frontend) missing.push(`cc1plus${suffix}`);
+    if (missing.length > 0) {
+        console.error(`Incomplete ESP32-S3 compiler package; missing: ${missing.join(', ')}`);
+        process.exit(1);
+    }
+
+    const result = spawnSync(compiler, ['-x', 'c++', '-E', '-'], {
+        cwd: repoRoot,
+        input: '',
+        encoding: 'utf8',
+        windowsHide: true
+    });
+    if (result.error || result.status !== 0) {
+        const detail = result.error ?
+            result.error.message :
+            (result.stderr || result.stdout || `exit ${result.status}`).trim();
+        console.error(`ESP32-S3 compiler smoke test failed: ${detail}`);
+        process.exit(1);
+    }
+    console.log(`Verified ESP32-S3 compiler frontend: ${toDisplayPath(path.relative(toolsRoot, frontend))}`);
+};
+
 const printUsage = () => {
     console.log([
         'Usage: node script/prune-tools.js [--apply]',
@@ -132,6 +181,7 @@ if (!fs.existsSync(arduinoRoot)) {
 }
 
 assertRequiredPaths();
+assertEsp32CompilerUsable();
 
 const pruneTargets = removePaths.concat(listEsp32LibPruneTargets())
     .filter(relativePath => fs.existsSync(toAbsolute(relativePath)));
