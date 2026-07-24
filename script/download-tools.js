@@ -24,7 +24,9 @@ const argv = process.argv.slice(2);
  */
 const parseCli = () => {
     let platform = os.platform();
-    let extractPath = path.join(repoRoot, 'tools');
+    let extractPath = process.platform === 'win32'
+        ? 'C:\\futureacademy\\tools'
+        : path.join(repoRoot, 'tools');
 
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--platform' && argv[i + 1]) {
@@ -69,7 +71,8 @@ const extract7zFile = (filePath, fileName) => {
 
     const sevenStream = extractFull(filePath, outputDir, {
         $bin: path7za,
-        $progress: true
+        $progress: true,
+        $scc: 'UTF-8'
     });
 
     sevenStream.on('progress', progress => {
@@ -231,7 +234,7 @@ const downloadReleaseAssets = async () => {
                 `[download-tools] GitHub release not found (${user}/${repo}).\n` +
                 '  • Set TOOLS_7Z_PATH or WINDY_TOOLS_SOURCE and run: npm run fetch:local\n' +
                 '  • Or set WINBLOCK_TOOLS_USER / WINBLOCK_TOOLS_REPO / WINBLOCK_TOOLS_TAG\n' +
-                '  • Or copy tools from C:\\Program Files\\Future Academy\\tools'
+                '  • Or copy tools to C:\\futureacademy\\tools'
             );
         }
         return false;

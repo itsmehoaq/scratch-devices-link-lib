@@ -21,7 +21,7 @@ mod usb_id;
 mod ws;
 
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::{fs::OpenOptions, io::Write};
 
@@ -209,11 +209,20 @@ fn show_console_log(log: &std::path::Path) {
     }
 }
 
+/// Global handle to the main tokio runtime, set once by start_runtime() and
+/// read by OTA spawn sites on the main thread.
+static RT_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+
 /// Spawn the tokio runtime on a background thread and start the link server +
 /// toolchain setup. Returns immediately; the runtime thread runs forever.
 fn start_runtime() {
     thread::spawn(|| {
-        let rt = tokio::runtime::Runtime::new().expect("failed to build tokio runtime");
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime");
+        RT_HANDLE.set(rt.handle().clone()).ok();
         rt.block_on(async {
             // Path resolution (port of start-link-server.js).
             let base_dir = paths::resolve_runtime_base_dir();
@@ -306,17 +315,43 @@ fn start_runtime() {
                         app_setup.set_setup_phase(Some("error".to_string()));
                     } else {
                         // CLI environment init after successful toolchain setup.
-                        upload::arduino::init_cli_environment(
-                            &tools_setup,
-                            &app_setup.user_data_path,
-                        );
+                        // Runs on the blocking thread pool so the tokio worker
+                        // is not held hostage by arduino-cli shell-outs.
+                        let tools_clone = tools_setup.clone();
+                        let user_data_clone = app_setup.user_data_path.clone();
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            upload::arduino::init_cli_environment(
+                                &tools_clone,
+                                &user_data_clone,
+                            );
+                        })
+                        .await
+                        {
+                            tracing::error!("[link] init_cli_environment panicked: {}", e);
+                        }
                     }
                 });
             }
 
             // Initialize CLI environment at startup when tools already exist.
+            // Runs on the blocking thread pool so the tokio worker is free
+            // and the server can start serving immediately in parallel.
             if ok {
-                upload::arduino::init_cli_environment(&tools_path, &app.user_data_path);
+                let tools_clone = tools_path.clone();
+                let user_data_clone = app.user_data_path.clone();
+                let cli_init = tokio::task::spawn_blocking(move || {
+                    upload::arduino::init_cli_environment(
+                        &tools_clone,
+                        &user_data_clone,
+                    );
+                });
+                // Fire-and-forget: server starts now, CLI init happens in background.
+                // Errors are logged inside init_cli_environment via tracing.
+                tokio::spawn(async move {
+                    if let Err(e) = cli_init.await {
+                        tracing::error!("[link] init_cli_environment panicked: {}", e);
+                    }
+                });
             }
 
             // Serve forever (with EADDRINUSE same-server retry).
@@ -395,7 +430,12 @@ fn main() {
     {
         let proxy = proxy.clone();
         thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("update check runtime");
+            // Wait for the main runtime handle to become available.
+            while RT_HANDLE.get().is_none() {
+                thread::sleep(Duration::from_millis(50));
+            }
+            let handle = RT_HANDLE.get().unwrap();
+
             let client = reqwest::Client::builder()
                 .user_agent("FutureAcademyLink/2.0")
                 .connect_timeout(Duration::from_secs(10))
@@ -406,7 +446,7 @@ fn main() {
             thread::sleep(Duration::from_secs(5));
 
             loop {
-                let result = rt.block_on(update::check_for_update(&client));
+                let result = handle.block_on(update::check_for_update(&client));
                 let _ = proxy.send_event(UserEvent::UpdateCheck(result));
                 thread::sleep(Duration::from_secs(4 * 60 * 60));
             }
@@ -476,7 +516,7 @@ fn main() {
     let mut prepared_update: Option<update::PreparedUpdate> = None;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Poll;
+        *control_flow = ControlFlow::Wait;
 
         while let Ok(ev) = menu_receiver.try_recv() {
             if ev.id == open_website_id {
@@ -508,7 +548,7 @@ fn main() {
 
                     let proxy = proxy_upd.clone();
                     thread::spawn(move || {
-                        let rt = tokio::runtime::Runtime::new().expect("update download runtime");
+                        let handle = RT_HANDLE.get().expect("runtime handle not set");
                         let client = reqwest::Client::builder()
                             .user_agent("FutureAcademyLink/2.0")
                             .connect_timeout(Duration::from_secs(10))
@@ -522,7 +562,7 @@ fn main() {
                                     .send_event(UserEvent::UpdateProgress { received, total });
                             });
 
-                        let result = match rt.block_on(update::download_update(
+                        let result = match handle.block_on(update::download_update(
                             &client,
                             &info,
                             Some(progress),
@@ -544,14 +584,14 @@ fn main() {
                     update_check_in_progress = true;
                     let proxy = proxy_upd.clone();
                     thread::spawn(move || {
-                        let rt = tokio::runtime::Runtime::new().expect("manual check rt");
+                        let handle = RT_HANDLE.get().expect("runtime handle not set");
                         let client = reqwest::Client::builder()
                             .user_agent("FutureAcademyLink/2.0")
                             .connect_timeout(Duration::from_secs(10))
                             .timeout(Duration::from_secs(30))
                             .build()
                             .expect("manual check client");
-                        let result = rt.block_on(update::check_for_update(&client));
+                        let result = handle.block_on(update::check_for_update(&client));
                         let _ = proxy.send_event(UserEvent::UpdateCheck(result));
                     });
                 }

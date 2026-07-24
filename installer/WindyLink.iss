@@ -67,7 +67,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\FutureAcademyTray.exe"; Tasks
 
 [Registry]
 Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "ToolsPath"; ValueData: "{app}\tools"
+Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "ToolsPath"; ValueData: "C:\futureacademy\tools"
 
 [Code]
 function GetNodeVersion: String;
@@ -152,7 +152,7 @@ var
   RequiredLibs: TArrayOfString;
   I: Integer;
 begin
-  ToolsRoot := ExpandConstant('{app}\tools');
+  ToolsRoot := 'C:\futureacademy\tools';
   LibrariesRoot := ToolsRoot + '\Arduino\libraries';
 
   { First install or broken tools folder: always extract. }
@@ -220,7 +220,7 @@ var
 begin
   SevenZip := ExpandConstant('{tmp}\7za.exe');
   Archive := ExpandConstant('{tmp}\tools.7z');
-  DestRoot := ExpandConstant('{app}');
+  DestRoot := 'C:\futureacademy';
 
   if not FileExists(SevenZip) then
   begin

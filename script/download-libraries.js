@@ -22,7 +22,8 @@ const getFlagValue = name => {
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 const repoRoot = path.resolve(__dirname, '..');
-const toolsRoot = getFlagValue('--tools-root') || path.join(repoRoot, 'tools');
+const toolsRoot = getFlagValue('--tools-root') ||
+    (process.platform === 'win32' ? 'C:\\futureacademy\\tools' : path.join(repoRoot, 'tools'));
 const arduinoRoot = path.join(path.resolve(toolsRoot), 'Arduino');
 const arduinoCli = path.join(
     arduinoRoot,
@@ -44,7 +45,7 @@ const printUsage = () => {
         '<tools-root>/Arduino/libraries using arduino-cli and direct GitHub downloads.',
         '',
         'Options:',
-        '  --tools-root <path>  Tools directory containing Arduino/ (default: ./tools)',
+        '  --tools-root <path>  Tools directory containing Arduino/ (default: C:\\futureacademy\\tools on Windows, ./tools elsewhere)',
         '  --force     Remove existing library before installing (re-download)',
         '  --dry-run   Print what would be done without making changes',
         '  --help, -h  Show this help message'
@@ -74,7 +75,7 @@ const libraryExists = dirName => fs.existsSync(path.join(librariesDir, dirName))
 const toDirName = name => name.replace(/ /g, '_');
 
 const runArduinoCli = (args, {stdio = 'pipe'} = {}) => {
-    execSync(`"${arduinoCli}" ${args}`, {stdio, windowsHide: true});
+    execSync(`"${arduinoCli}" ${args}`, {stdio, windowsHide: true, encoding: 'utf8'});
 };
 
 /**
@@ -127,7 +128,7 @@ const installArduinoLib = (name, version, explicitDirName) => {
 
     try {
         console.log(`  ↓ Installing ${spec} ...`);
-        execSync(cmd, {stdio: 'pipe', windowsHide: true});
+        execSync(cmd, {stdio: 'pipe', windowsHide: true, encoding: 'utf8'});
         console.log(`  ✓ ${spec} installed`);
         return true;
     } catch (err) {
@@ -209,8 +210,8 @@ const downloadGitHubLib = async (owner, repo, tag, dirName) => {
         // Extract zip file — cross-platform
         if (os.platform() === 'win32') {
             execSync(
-                `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractTmp}' -Force"`,
-                {stdio: 'pipe', windowsHide: true}
+                `powershell -NoProfile -Command "Expand-Archive -Path \\\"${zipPath}\\\" -DestinationPath \\\"${extractTmp}\\\" -Force"`,
+                {stdio: 'pipe', windowsHide: true, encoding: 'utf8'}
             );
         } else {
             execSync(

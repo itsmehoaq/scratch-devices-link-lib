@@ -53,6 +53,7 @@ const sevenZip = spawn(path7za, [
     'a',
     '-t7z',
     '-mx=9',
+    '-sccUTF-8',
     archivePath,
     'tools'
 ], {

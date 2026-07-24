@@ -280,7 +280,7 @@ impl SerialportSession {
     // ── syncLibraries ─────────────────────────────────────────────────────
 
     /// Write bundled library files from the web app into tools/Arduino/libraries/.
-    /// Params: { libraries: { "LibName": { "LibName/file.h": "...", "LibName/file.cpp": "..." } } }
+    /// Params: { libraries: { "LibName": { "src/file.h": "...", "src/file.cpp": "..." } } }
     async fn sync_libraries(&mut self, params: &Value) -> Result<(), String> {
         let libs = params.get("libraries").and_then(|v| v.as_object()).ok_or_else(|| {
             "syncLibraries: missing 'libraries' field".to_string()
@@ -295,13 +295,19 @@ impl SerialportSession {
             if let Some(obj) = files.as_object() {
                 for (file_path, content) in obj {
                     if let Some(s) = content.as_str() {
-                        let target = lib_dir.join(file_path);
+                        // Strip "LibName/" prefix if present (file_path may include it)
+                        let relative = if let Some(rest) = file_path.strip_prefix(lib_name) {
+                            rest.trim_start_matches('/')
+                        } else {
+                            file_path.as_str()
+                        };
+                        let target = lib_dir.join(relative);
                         if let Some(parent) = target.parent() {
                             let _ = fs::create_dir_all(parent);
                         }
                         let _ = fs::write(&target, s);
                         count += 1;
-                    }
+                    }                                                                                       
                 }
             }
         }
@@ -570,7 +576,7 @@ impl SerialportSession {
                     };
                     match read {
                         Ok(0) => {
-                            std::thread::sleep(Duration::from_millis(5));
+                            std::thread::sleep(Duration::from_millis(20));
                         }
                         Ok(n) => {
                             if tx.send(SerialEvent::Data(buf[..n].to_vec())).is_err() {
@@ -1525,17 +1531,36 @@ async fn run_esp32_flash(
 }
 
 /// Bridge the session abort flag → the tool's own abort flag.
+/// When called from within a tokio runtime (including spawn_blocking threads),
+/// spawns a lightweight async task. Otherwise falls back to a dedicated OS thread.
 fn spawn_abort_bridge(external: Arc<AtomicBool>, tool: Arc<AtomicBool>) {
-    std::thread::spawn(move || loop {
-        if external.load(Ordering::Relaxed) {
-            tool.store(true, Ordering::Relaxed);
-            break;
-        }
-        if tool.load(Ordering::Relaxed) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    });
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        // Async path: spawn a cheap tokio task instead of burning an OS thread.
+        handle.spawn(async move {
+            loop {
+                if external.load(Ordering::Relaxed) {
+                    tool.store(true, Ordering::Relaxed);
+                    break;
+                }
+                if tool.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+    } else {
+        // Fallback: no tokio runtime available (shouldn't happen in practice).
+        std::thread::spawn(move || loop {
+            if external.load(Ordering::Relaxed) {
+                tool.store(true, Ordering::Relaxed);
+                break;
+            }
+            if tool.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        });
+    }
 }
 
 /// Build a `sendstd`-shaped closure that emits `uploadStdout` notifications.
