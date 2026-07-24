@@ -1,6 +1,6 @@
 [package]
 name = "future-academy-tray"
-version = "2.0.14"
+version = "2.0.15"
 edition = "2021"
 description = "Future Academy Link tray shell + local hardware link server (single binary, no Node runtime)."
 license = "MIT"
@@ -37,9 +37,6 @@ ureq = { version = "2.10", features = ["json"] }
 
 # Archive extraction
 sevenz-rust2 = { version = "0.21", default-features = false, features = ["util"] }
-flate2 = "1"
-bzip2 = "0.4"
-tar = "0.4"
 zip = "2"
 
 # Hashing

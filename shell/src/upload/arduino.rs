@@ -2,6 +2,7 @@
 //! pre-erase via esptool). Port of `src/upload/arduino.js`.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -424,7 +425,14 @@ impl Arduino {
         }
     }
 
-    /// Port of `_buildCompileLibraryPaths` (ordered, deduped, existing only).
+    /// Return Arduino library *search roots* (ordered, deduped, existing only).
+    ///
+    /// `arduino-cli --libraries` expects a directory containing libraries, not
+    /// one flag per individual library. Passing every library separately makes
+    /// the CLI recursively misclassify `examples/`, `assets/`, and `docs/` as
+    /// libraries, creates a very long Windows command line, and amplifies path
+    /// encoding problems. Normalize configured individual libraries to their
+    /// parent search root as well.
     fn build_compile_library_paths(&self) -> Vec<PathBuf> {
         let mut ordered = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -445,20 +453,34 @@ impl Arduino {
                 ordered.push(abs);
             }
         };
-        for p in self.discover_manual_library_paths() {
-            add(&p, &mut ordered, &mut seen);
-        }
+        let add_search_root =
+            |path: &Path,
+             ordered: &mut Vec<PathBuf>,
+             seen: &mut std::collections::HashSet<PathBuf>| {
+                let root = if Self::is_arduino_library_dir(path) {
+                    path.parent().unwrap_or(path)
+                } else {
+                    path
+                };
+                add(root, ordered, seen);
+            };
+
+        add(
+            &self.arduino_path.join("libraries"),
+            &mut ordered,
+            &mut seen,
+        );
         if let Some(arr) = self.config.get("libraryOrder").and_then(|v| v.as_array()) {
             for v in arr {
                 if let Some(s) = v.as_str() {
-                    add(Path::new(s), &mut ordered, &mut seen);
+                    add_search_root(Path::new(s), &mut ordered, &mut seen);
                 }
             }
         }
         if let Some(arr) = self.config.get("library").and_then(|v| v.as_array()) {
             for v in arr {
                 if let Some(s) = v.as_str() {
-                    add(Path::new(s), &mut ordered, &mut seen);
+                    add_search_root(Path::new(s), &mut ordered, &mut seen);
                 }
             }
         }
@@ -594,7 +616,7 @@ impl Arduino {
     fn get_bundled_at32_ws2812b_library_path(&self) -> Option<PathBuf> {
         let p = self.arduino_path.join("libraries").join("WS2812B");
         if p.exists() {
-            Some(p)
+            p.parent().map(Path::to_path_buf)
         } else {
             None
         }
@@ -730,17 +752,17 @@ impl Arduino {
         }
 
         let compile_fqbn = self.build_compile_fqbn(has_windify_audio);
-        let mut args: Vec<String> = vec![
+        let mut args: Vec<OsString> = vec![
             "compile".into(),
             "--fqbn".into(),
-            compile_fqbn,
+            compile_fqbn.into(),
             "--warnings=none".into(),
             "--verbose".into(),
             "--build-path".into(),
-            self.build_path.to_string_lossy().to_string(),
+            self.build_path.as_os_str().to_owned(),
             "--config-file".into(),
-            self.config_file_path.to_string_lossy().to_string(),
-            self.code_folder_path.to_string_lossy().to_string(),
+            self.config_file_path.as_os_str().to_owned(),
+            self.code_folder_path.as_os_str().to_owned(),
         ];
 
         // Inject libraries (matches JS splice(3, ...) order, reversed loop).
@@ -769,20 +791,26 @@ impl Arduino {
         for lib in extra_libs.iter().rev() {
             args.splice(
                 3..3,
-                ["--libraries".to_string(), lib.to_string_lossy().to_string()],
+                [
+                    OsString::from("--libraries"),
+                    lib.as_os_str().to_owned(),
+                ],
             );
             sendstd(&format!("Inject library: {}\n", lib.display()), None);
         }
 
         // sketchIdx = index of code folder path (recompute after splices).
-        let sketch_path = self.code_folder_path.to_string_lossy().to_string();
+        let sketch_path = self.code_folder_path.as_os_str().to_owned();
         let sketch_idx = args
             .iter()
-            .position(|a| *a == sketch_path)
+            .position(|arg| arg == &sketch_path)
             .unwrap_or(args.len());
         let flash_props = self.esp32_flash_build_properties(has_windify_audio, sendstd);
         if !flash_props.is_empty() {
-            args.splice(sketch_idx..sketch_idx, flash_props);
+            args.splice(
+                sketch_idx..sketch_idx,
+                flash_props.into_iter().map(OsString::from),
+            );
         }
 
         if let Some(defines) = self
@@ -811,8 +839,11 @@ impl Arduino {
                 args.splice(
                     sketch_idx..sketch_idx,
                     [
-                        "--build-property".to_string(),
-                        format!("compiler.cpp.extra_flags={}", flags.join(" ")),
+                        OsString::from("--build-property"),
+                        OsString::from(format!(
+                            "compiler.cpp.extra_flags={}",
+                            flags.join(" ")
+                        )),
                     ],
                 );
             }
@@ -826,8 +857,7 @@ impl Arduino {
         }
 
         sendstd("Start building...\n", None);
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let (code, build_log) = self.spawn_stream(&arg_refs, sendstd, true)?;
+        let (code, build_log) = self.spawn_stream(&args, sendstd, true)?;
 
         sendstd(&format!("{}\r\n", ansi::CLEAR), None);
         match code {
@@ -851,7 +881,7 @@ impl Arduino {
     /// abort handling. Returns (exit_code, captured_log_tail).
     fn spawn_stream(
         &self,
-        args: &[&str],
+        args: &[OsString],
         sendstd: &mut SendStd,
         color_build: bool,
     ) -> Result<(Option<i32>, String), String> {
@@ -1313,27 +1343,27 @@ impl Arduino {
         firmware_path: Option<&Path>,
         sendstd: &mut SendStd,
     ) -> Result<UploadResult, String> {
-        let mut args: Vec<String> = vec![
+        let mut args: Vec<OsString> = vec![
             "upload".into(),
             "--fqbn".into(),
-            self.fqbn.clone(),
+            self.fqbn.clone().into(),
             "--verbose".into(),
             "--verify".into(),
             "--config-file".into(),
-            self.config_file_path.to_string_lossy().to_string(),
-            format!("-p{}", upload_port),
+            self.config_file_path.as_os_str().to_owned(),
+            format!("-p{}", upload_port).into(),
         ];
         if self.fqbn.starts_with("Maixduino:k210:") {
             args.push("-Pkflash".into());
         }
         if let Some(fw) = firmware_path {
             args.push("--input-file".into());
-            args.push(fw.to_string_lossy().to_string());
-            args.push(fw.to_string_lossy().to_string());
+            args.push(fw.as_os_str().to_owned());
+            args.push(fw.as_os_str().to_owned());
         } else {
             args.push("--input-dir".into());
-            args.push(self.build_path.to_string_lossy().to_string());
-            args.push(self.code_folder_path.to_string_lossy().to_string());
+            args.push(self.build_path.as_os_str().to_owned());
+            args.push(self.code_folder_path.as_os_str().to_owned());
         }
 
         if !self.arduino_cli_path.exists() {
@@ -1343,8 +1373,7 @@ impl Arduino {
             ));
         }
 
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let (code, raw_output) = self.spawn_stream(&arg_refs, sendstd, false)?;
+        let (code, raw_output) = self.spawn_stream(&args, sendstd, false)?;
 
         if code == Some(0) {
             let post_delay = self
@@ -1413,16 +1442,11 @@ impl Arduino {
     }
 }
 
-/// Run arduino-cli with args. Static helper for CLI environment init.
-fn run_cli_sync(cli_path: &Path, args: &[&str]) {
-    let mut cmd = std::process::Command::new(cli_path);
-    cmd.args(args);
-    configure_killable(&mut cmd);
-    let _ = cmd.output();
-}
-
 /// Initialize the Arduino CLI environment. Called once at app startup.
-/// Port of `initArduinoCli`, but uses tracing instead of sendstd.
+///
+/// The config is serialized directly rather than invoking `arduino-cli config`
+/// several times. This is deterministic across localized Windows installs and
+/// correctly quotes spaces, drive letters, and Unicode user-directory names.
 pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
     let arduino_path = tools_path.join("Arduino");
     let cli_path = resolve_tool_binary(tools_path, "Arduino/arduino-cli");
@@ -1432,69 +1456,13 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
     }
     let _ = std::fs::create_dir_all(user_data_path.join("arduino"));
     let cfg = user_data_path.join("arduino").join("arduino-cli.yaml");
-    let cfg_str = cfg.to_string_lossy().to_string();
-
-    run_cli_sync(&cli_path, &["config", "init", "--dest-file", &cfg_str]);
-
-    let mut dump_cmd = std::process::Command::new(&cli_path);
-    dump_cmd.args(["config", "dump", "--config-file", &cfg_str]);
-    configure_killable(&mut dump_cmd);
-    let out = dump_cmd.output();
-    if let Ok(out) = out {
-        let parsed: Value = serde_yaml::from_slice(&out.stdout).unwrap_or(Value::Null);
-        let directories = parsed.get("directories");
-        let data = directories
-            .and_then(|d| d.get("data"))
-            .and_then(|v| v.as_str());
-        let downloads = directories
-            .and_then(|d| d.get("downloads"))
-            .and_then(|v| v.as_str());
-        let user = directories
-            .and_then(|d| d.get("user"))
-            .and_then(|v| v.as_str());
-        let arduino = arduino_path.to_string_lossy().to_string();
-        let staging = arduino_path.join("staging").to_string_lossy().to_string();
-        if data != Some(arduino.as_str())
-            || downloads != Some(staging.as_str())
-            || user != Some(arduino.as_str())
-        {
-            tracing::info!(
-                "[link] arduino cli config not initialized — setting paths to {}",
-                arduino
-            );
-            run_cli_sync(
-                &cli_path,
-                &[
-                    "config",
-                    "set",
-                    "directories.data",
-                    &arduino,
-                    "--config-file",
-                    &cfg_str,
-                ],
-            );
-            run_cli_sync(
-                &cli_path,
-                &[
-                    "config",
-                    "set",
-                    "directories.downloads",
-                    &staging,
-                    "--config-file",
-                    &cfg_str,
-                ],
-            );
-            run_cli_sync(
-                &cli_path,
-                &[
-                    "config",
-                    "set",
-                    "directories.user",
-                    &arduino,
-                    "--config-file",
-                    &cfg_str,
-                ],
-            );
-        }
+    match crate::toolchain::write_arduino_config(&cfg, &arduino_path) {
+        Ok(()) => tracing::info!(
+            "[link] Arduino CLI config ready at {}",
+            cfg.display()
+        ),
+        Err(error) => tracing::error!(
+            "[link] failed to initialize Arduino CLI config: {error}"
+        ),
     }
 }

@@ -1,19 +1,18 @@
-//! Runtime tool download. If the pre-shipped `tools/` (Windows) or
-//! `tools-mac/` (macOS) folder is missing or empty, the shell fetches the
-//! matching `.7z` archive from the GitHub Tools release and extracts it in
-//! place using a pure-Rust 7z decoder. This lets the client device self-update
-//! its toolchain on first launch with no developer-side step and no external
-//! `7zr` / 7-Zip install.
+//! Atomic runtime installation of the platform tool package.
 //!
-//! The archive URL is fixed at compile time so it cannot be tampered with at
-//! runtime.
+//! The archive is downloaded and extracted beside the destination using only
+//! Rust APIs. The staged package is permission-repaired and fully validated
+//! before it replaces an existing install, which keeps retries safe and avoids
+//! shell quoting/code-page problems on Windows.
 
+use std::fs;
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use sha2::{Digest, Sha256};
-use std::io::IsTerminal;
+use uuid::Uuid;
 
 #[cfg(target_os = "macos")]
 pub const TOOLS_7Z: &str = "tools-mac.7z";
@@ -23,312 +22,291 @@ pub const TOOLS_7Z: &str = "tools.7z";
 pub const ASSET_BASE: &str =
     "https://github.com/Kannoki/scratch-devices-link-lib/releases/download/Tools/";
 
-/// Result of the runtime tools check/download.
+const DOWNLOAD_ATTEMPTS: usize = 3;
+
+pub type ProgressFn = Arc<dyn Fn(u8) + Send + Sync + 'static>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolsStatus {
-    /// Pre-shipped tools were found; nothing to do.
     Present,
-    /// Tools were missing; download, sha256-verify, and extraction completed successfully.
     Downloaded,
-    /// Tools were missing but the download, verification, or extraction failed. The
-    /// inner String describes what went wrong so the caller can surface it to the user.
     Failed(String),
 }
 
-/// Thin wrapper so the caller (an async context) can pass a bar into this sync fn.
-pub struct DownloadProgress {
-    bar: Option<ProgressBar>,
-}
-
-impl DownloadProgress {
-    pub fn new(total_bytes: u64) -> Self {
-        if !std::io::stderr().is_terminal() {
-            return Self { bar: None };
+/// Validate an existing install or atomically replace it with a fresh package.
+pub fn ensure_tools(tools_path: &Path, progress: ProgressFn) -> ToolsStatus {
+    match crate::toolchain::repair_executable_permissions(tools_path) {
+        Ok(repaired) if repaired > 0 => {
+            tracing::info!("[tools] restored execute permission on {repaired} files");
         }
-        let bar = ProgressBar::with_draw_target(Some(total_bytes), ProgressDrawTarget::stderr());
-        bar.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
-        );
-        bar.enable_steady_tick(Duration::from_millis(120));
-        Self { bar: Some(bar) }
+        Ok(_) => {}
+        Err(error) => tracing::warn!("[tools] permission repair failed: {error}"),
     }
 
-    pub fn bar(&self) -> Option<&ProgressBar> {
-        self.bar.as_ref()
-    }
-
-    pub fn finish_ok(&self, msg: &str) {
-        if let Some(b) = &self.bar {
-            b.finish_with_message(msg.to_string());
-        } else {
-            tracing::info!("[tools] {msg}");
-        }
-    }
-
-    pub fn abandon(&self, msg: &str) {
-        if let Some(b) = &self.bar {
-            b.abandon_with_message(msg.to_string());
-        } else {
-            tracing::error!("[tools] {msg}");
-        }
-    }
-}
-
-/// Check whether the CLI binary already exists under tools_path.
-pub fn ensure_tools(tools_path: &Path, dl: &DownloadProgress) -> ToolsStatus {
-    let cli = tools_path.join("Arduino").join(crate::toolchain::CLI_FILE);
-    if cli.exists() {
+    let current = crate::toolchain::validate_toolchain(tools_path);
+    if current.is_ready() {
+        progress(100);
         return ToolsStatus::Present;
     }
-
-    // Remove any leftover tools directory from a prior failed extraction so
-    // the fresh extraction doesn't trip over existing paths.
     if tools_path.exists() {
-        let _ = std::fs::remove_dir_all(tools_path);
+        tracing::warn!(
+            "[tools] existing package is incomplete: {}",
+            current.missing.join("; ")
+        );
     }
 
     tracing::info!(
-        target: "future-academy-tray",
-        "[tools] not found at {} -- downloading from GitHub release Tools",
+        "[tools] installing {} into {}",
+        TOOLS_7Z,
         tools_path.display()
     );
-
-    match download_verify_and_extract(tools_path, dl.bar()) {
+    match download_extract_and_install(tools_path, progress) {
         Ok(()) => ToolsStatus::Downloaded,
-        Err(e) => {
-            dl.abandon(&e);
-            ToolsStatus::Failed(e)
-        }
+        Err(error) => ToolsStatus::Failed(format!("tool package installation failed: {error}")),
     }
 }
 
-fn download_verify_and_extract(tools_path: &Path, bar: Option<&ProgressBar>) -> Result<(), String> {
-    let asset_name = TOOLS_7Z;
-    let download_url = format!("{ASSET_BASE}{asset_name}");
+fn download_extract_and_install(tools_path: &Path, progress: ProgressFn) -> Result<(), String> {
+    let parent = tools_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("create tools parent {}: {error}", parent.display()))?;
 
-    // Download to a temp file beside the target so we can stream SHA256 + write
-    // to disk in a single pass, then drop the archive after extraction.
-    let tmp_dir = tools_path
-        .parent()
-        .map(Path::new)
-        .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(tmp_dir).map_err(|e| format!("mkdir tools parent: {e}"))?;
-    let dest = tmp_dir.join(asset_name);
+    let id = Uuid::new_v4().simple().to_string();
+    let archive = parent.join(format!(".windy-tools-{id}.7z.partial"));
+    let stage = parent.join(format!(".windy-tools-{id}.stage"));
+    let url = format!("{ASSET_BASE}{TOOLS_7Z}");
 
-    tracing::info!(target: "future-academy-tray", "[tools] downloading {download_url}");
-    let response = ureq::get(&download_url)
+    let result = (|| {
+        download_with_retries(&url, &archive, progress.clone())?;
+        fs::create_dir(&stage)
+            .map_err(|error| format!("create extraction stage {}: {error}", stage.display()))?;
+        // sevenz-rust2 has historically panicked inside Windows path APIs for
+        // some Unicode/junction paths. Convert that panic into a normal setup
+        // failure so the previous atomic install remains usable.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sevenz_rust2::decompress_file(&archive, &stage)
+        }))
+        .map_err(|panic| {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown sevenz-rust2 panic".to_string());
+            format!("extract {TOOLS_7Z} panicked: {message}")
+        })?
+        .map_err(|error| format!("extract {TOOLS_7Z}: {error}"))?;
+
+        let prepared = extracted_package_root(&stage)?;
+        let repaired = crate::toolchain::repair_executable_permissions(&prepared)?;
+        if repaired > 0 {
+            tracing::info!("[tools] restored execute permission on {repaired} staged files");
+        }
+        let validation = crate::toolchain::validate_toolchain(&prepared);
+        if !validation.is_ready() {
+            return Err(format!(
+                "downloaded archive is incomplete: {}",
+                validation.missing.join("; ")
+            ));
+        }
+
+        replace_atomically(&prepared, tools_path)?;
+        progress(100);
+        Ok(())
+    })();
+
+    let _ = fs::remove_file(&archive);
+    let _ = fs::remove_dir_all(&stage);
+    result
+}
+
+fn download_with_retries(
+    url: &str,
+    destination: &Path,
+    progress: ProgressFn,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        progress(0);
+        match download_once(url, destination, progress.clone()) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                errors.push(format!("attempt {attempt}: {error}"));
+                let _ = fs::remove_file(destination);
+            }
+        }
+    }
+    Err(format!(
+        "download failed after {DOWNLOAD_ATTEMPTS} attempts ({})",
+        errors.join(" | ")
+    ))
+}
+
+fn download_once(url: &str, destination: &Path, progress: ProgressFn) -> Result<(), String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(20))
+        .timeout_read(Duration::from_secs(90))
+        .timeout_write(Duration::from_secs(90))
+        .build();
+    let response = agent
+        .get(url)
         .call()
-        .map_err(|e| format!("download failed: {e}"))?;
-
+        .map_err(|error| format!("GET {url}: {error}"))?;
     if !(200..300).contains(&response.status()) {
-        return Err(format!("GitHub returned HTTP {}", response.status()));
+        return Err(format!("GET {url}: HTTP {}", response.status()));
     }
 
-    let total = response
+    let expected_size = response
         .header("Content-Length")
-        .and_then(|v| v.parse::<u64>().ok());
-
-    let mut file = std::fs::File::create(&dest).map_err(|e| format!("create archive: {e}"))?;
-    use std::io::{BufWriter, Write};
-    let mut writer = BufWriter::new(&mut file);
-    let mut hasher = Sha256::new();
-    let mut received: u64 = 0;
+        .and_then(|value| value.parse::<u64>().ok());
+    let file = fs::File::create(destination)
+        .map_err(|error| format!("create {}: {error}", destination.display()))?;
+    let mut writer = BufWriter::new(file);
     let mut reader = response.into_reader();
+    let mut hasher = Sha256::new();
+    let mut received = 0_u64;
+    let mut buffer = [0_u8; 256 * 1024];
 
-    let mut buf = [0u8; 256 * 1024];
     loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| format!("read response: {e}"))?;
-        if n == 0 {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("read response: {error}"))?;
+        if count == 0 {
             break;
         }
         writer
-            .write_all(&buf[..n])
-            .map_err(|e| format!("write archive: {e}"))?;
-        hasher.update(&buf[..n]);
-        received += n as u64;
-        // Update progress bar if provided; silently ignore if the bar is None
-        // (headless / non-TTY environments).
-        if let Some(b) = bar {
-            b.inc(n as u64);
+            .write_all(&buffer[..count])
+            .map_err(|error| format!("write {}: {error}", destination.display()))?;
+        hasher.update(&buffer[..count]);
+        received += count as u64;
+        if let Some(total) = expected_size.filter(|total| *total > 0) {
+            let percent = ((received.saturating_mul(100)) / total).min(99) as u8;
+            progress(percent);
         }
-        if let Some(total) = total {
-            let pct = (received as f64 / total as f64) * 100.0;
-            tracing::debug!(
-                target: "future-academy-tray",
-                "[tools] downloaded {}/{} ({:.0}%)",
-                received,
-                total,
-                pct
+    }
+    writer
+        .flush()
+        .map_err(|error| format!("flush {}: {error}", destination.display()))?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|error| format!("sync {}: {error}", destination.display()))?;
+
+    if let Some(expected) = expected_size {
+        if received != expected {
+            return Err(format!(
+                "truncated response: received {received} of {expected} bytes"
+            ));
+        }
+    }
+    if received == 0 {
+        return Err("server returned an empty archive".to_string());
+    }
+
+    tracing::info!(
+        "[tools] downloaded {received} bytes; sha256={}",
+        hex::encode(hasher.finalize())
+    );
+    Ok(())
+}
+
+/// Accept either an archive with a single `tools/` wrapper or a flat archive.
+fn extracted_package_root(stage: &Path) -> Result<PathBuf, String> {
+    let entries: Vec<PathBuf> = fs::read_dir(stage)
+        .map_err(|error| format!("read extraction stage {}: {error}", stage.display()))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| format!("read extracted entry: {error}"))
+        })
+        .collect::<Result<_, _>>()?;
+
+    if entries.len() == 1 && entries[0].is_dir() {
+        Ok(entries[0].clone())
+    } else if entries.is_empty() {
+        Err("archive extracted no files".to_string())
+    } else {
+        Ok(stage.to_path_buf())
+    }
+}
+
+/// Replace `destination` only after `prepared` has passed validation.
+///
+/// Both paths are siblings on the same filesystem, so rename is atomic. If
+/// activation fails, the previous package is restored.
+fn replace_atomically(prepared: &Path, destination: &Path) -> Result<(), String> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let backup = parent.join(format!(".windy-tools-backup-{}", Uuid::new_v4().simple()));
+    let had_previous = destination.exists();
+
+    if had_previous {
+        fs::rename(destination, &backup).map_err(|error| {
+            format!(
+                "move previous tools package {} aside: {error}",
+                destination.display()
+            )
+        })?;
+    }
+
+    if let Err(error) = fs::rename(prepared, destination) {
+        if had_previous {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(format!(
+            "activate tools package at {}: {error}",
+            destination.display()
+        ));
+    }
+
+    if had_previous {
+        if let Err(error) = fs::remove_dir_all(&backup) {
+            tracing::warn!(
+                "[tools] could not remove previous package {}: {error}",
+                backup.display()
             );
         }
     }
-    writer.flush().map_err(|e| format!("flush archive: {e}"))?;
-
-    let digest = hasher.finalize();
-    let actual_hex = hex::encode(digest);
-    tracing::info!(target: "future-academy-tray", "[tools] sha256: {actual_hex}");
-
-    tracing::info!(
-        target: "future-academy-tray",
-        "[tools] extracting {dest:?} -> {tools_path:?}"
-    );
-    extract_archive(&dest, tools_path)?;
-
-    // Remove the archive to save disk space.
-    let _ = std::fs::remove_file(&dest);
-
-    tracing::info!(
-        target: "future-academy-tray",
-        "[tools] ready at {}",
-        tools_path.display()
-    );
     Ok(())
 }
 
-fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest).map_err(|e| format!("mkdir dest: {e}"))?;
-    // In-process 7z extraction. Supports LZMA2 + Delta used by the release
-    // archives, which is why we replaced the old `7zr` shell-out (it had to be
-    // installed separately and was missing on most user machines).
-    //
-    // We extract to a sibling temp dir rather than `dest` directly because the
-    // archive is packed with a top-level `tools/` wrapper (matching the asset
-    // name). Extracting straight into `dest` would land files at
-    // `dest/tools/...`, leaving `dest/Arduino/arduino-cli[.exe]` missing and
-    // breaking the CLI lookup in `toolchain::check_toolchain`.
-    let stage_parent = dest.parent().unwrap_or_else(|| Path::new("."));
-    let stage = unique_stage_dir(stage_parent)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Run extraction in a catch_unwind guard. The sevenz_rust2 crate calls
-    // Windows APIs (CreateFile, GetFinalPathNameByHandleW) that can panic via
-    // windows-rs assertions when paths contain exotic characters or junctions.
-    let archive_owned = archive.to_path_buf();
-    let stage_owned = stage.to_path_buf();
-    let extract_result: Result<(), String> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        sevenz_rust2::decompress_file(&archive_owned, &stage_owned)
-    }))
-    .map_err(|e| {
-        let msg = if let Some(s) = e.downcast_ref::<&str>() {
-            s.to_string()
-        } else if let Some(s) = e.downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "unknown panic in sevenz_rust2".to_string()
-        };
-        format!("7z extract panicked: {msg}")
-    })
-    .and_then(|r| r.map_err(|e| format!("7z extract failed: {e}")));
-
-    extract_result?;
-
-    // If the archive flattened into a single top-level dir, hoist its contents
-    // up so the caller sees files directly under `dest` (the standard
-    // `tar --strip-components=1` pattern). If the archive ever ships flat, this
-    // is a no-op.
-    flatten_single_root(&stage, dest)?;
-
-    // Best-effort cleanup of the staging dir.
-    let _ = std::fs::remove_dir_all(&stage);
-    Ok(())
-}
-
-/// Pick a non-existent staging dir next to `dest`. Suffixes with `.stage-N` so
-/// repeated failures don't collide.
-fn unique_stage_dir(parent: &Path) -> Result<PathBuf, String> {
-    for n in 0..1000 {
-        let candidate = parent.join(format!(".windify-tools-stage-{n}"));
-        if !candidate.exists() {
-            std::fs::create_dir_all(&candidate).map_err(|e| format!("mkdir stage dir: {e}"))?;
-            return Ok(candidate);
-        }
+    fn test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{label}-{}", Uuid::new_v4()))
     }
-    Err("could not allocate a tools staging dir".to_string())
-}
 
-/// If `stage` contains exactly one entry and that entry is a directory, move
-/// its contents up to `dest` and remove the now-empty wrapper. Otherwise move
-/// `stage`'s contents directly into `dest`.
-fn flatten_single_root(stage: &Path, dest: &Path) -> Result<(), String> {
-    let entries = collect_children(stage)?;
-    if entries.len() == 1 && entries[0].is_dir() {
-        let wrapper = &entries[0];
-        move_children(wrapper, dest)?;
-        let _ = std::fs::remove_dir(wrapper);
-    } else if !entries.is_empty() {
-        move_children(stage, dest)?;
-    }
-    Ok(())
-}
+    #[test]
+    fn detects_wrapped_and_flat_archives() {
+        let wrapped = test_root("tools-wrapped");
+        fs::create_dir_all(wrapped.join("tools/Arduino")).unwrap();
+        assert_eq!(
+            extracted_package_root(&wrapped).unwrap(),
+            wrapped.join("tools")
+        );
 
-fn collect_children(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    let read = std::fs::read_dir(dir).map_err(|e| format!("read stage dir: {e}"))?;
-    for entry in read {
-        let entry = entry.map_err(|e| format!("iterate stage dir: {e}"))?;
-        if let Some(name) = entry.file_name().to_str() {
-            // Skip our own staging bookkeeping; should never appear here, but be safe.
-            if name.starts_with(".windify-tools-stage-") {
-                continue;
-            }
-            out.push(entry.path());
-        }
-    }
-    Ok(out)
-}
+        let flat = test_root("tools-flat");
+        fs::create_dir_all(flat.join("Arduino")).unwrap();
+        fs::write(flat.join("manifest.json"), b"{}").unwrap();
+        assert_eq!(extracted_package_root(&flat).unwrap(), flat);
 
-/// Move every entry under `src` directly into `dst`. Refuses to clobber
-/// existing files so a stale extraction doesn't silently overwrite user data.
-fn move_children(src: &Path, dst: &Path) -> Result<(), String> {
-    for entry in std::fs::read_dir(src).map_err(|e| format!("read src dir: {e}"))? {
-        let entry = entry.map_err(|e| format!("iterate src dir: {e}"))?;
-        let from = entry.path();
-        let file_name = entry.file_name();
-        let to = dst.join(&file_name);
-        if to.exists() {
-            return Err(format!(
-                "refusing to overwrite existing path during extraction: {}",
-                to.display()
-            ));
-        }
-        // `rename` works across the same filesystem; if `src` and `dst` are on
-        // different drives (rare for a staging dir next to the target) fall
-        // back to a copy + delete.
-        match std::fs::rename(&from, &to) {
-            Ok(()) => {}
-            Err(_) => move_across_drives(&from, &to)?,
-        }
+        fs::remove_dir_all(wrapped).unwrap();
+        fs::remove_dir_all(flat).unwrap();
     }
-    Ok(())
-}
 
-fn move_across_drives(from: &Path, to: &Path) -> Result<(), String> {
-    if from.is_dir() {
-        copy_dir_recursive(from, to)?;
-        std::fs::remove_dir_all(from).map_err(|e| format!("cleanup src dir: {e}"))?;
-    } else {
-        std::fs::copy(from, to).map_err(|e| format!("copy file: {e}"))?;
-        std::fs::remove_file(from).map_err(|e| format!("cleanup src file: {e}"))?;
-    }
-    Ok(())
-}
+    #[test]
+    fn atomically_replaces_existing_package_under_unicode_path() {
+        let root = test_root("Công cụ");
+        let destination = root.join("Thiết bị");
+        let prepared = root.join("prepared");
+        fs::create_dir_all(&destination).unwrap();
+        fs::create_dir_all(&prepared).unwrap();
+        fs::write(destination.join("version"), b"old").unwrap();
+        fs::write(prepared.join("version"), b"new").unwrap();
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dst).map_err(|e| format!("mkdir dst: {e}"))?;
-    for entry in std::fs::read_dir(src).map_err(|e| format!("read src: {e}"))? {
-        let entry = entry.map_err(|e| format!("iterate src: {e}"))?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to).map_err(|e| format!("copy file: {e}"))?;
-        }
+        replace_atomically(&prepared, &destination).unwrap();
+        assert_eq!(fs::read(destination.join("version")).unwrap(), b"new");
+        assert!(!prepared.exists());
+        fs::remove_dir_all(root).unwrap();
     }
-    Ok(())
 }

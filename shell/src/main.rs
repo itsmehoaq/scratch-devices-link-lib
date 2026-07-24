@@ -237,7 +237,7 @@ fn start_runtime() {
 
             // Background toolchain check/setup → updates /status.
             let (ok, _cli) = toolchain::check_toolchain(&tools_path);
-            if ok && paths::is_esp32_toolchain_ready(&tools_path) {
+            if ok {
                 let layout = paths::validate_tools_layout(&tools_path);
                 if !layout.ok {
                     for m in &layout.missing {

@@ -24,8 +24,14 @@ xattr -cr "Future Academy Link.app"
 **Windows:** unzip, run `Future Academy Link.exe`.
 
 On first run, arduino-cli and the ESP32/AVR toolchain are downloaded to:
-- macOS: `~/Library/Application Support/Future Academy Link/tools/`
-- Windows: `%LOCALAPPDATA%\Future Academy Link\tools\`
+- macOS: `~/Library/Application Support/WindyLink/tools/`
+- Windows: `%LOCALAPPDATA%\WindyLink\tools\`
+
+Setup uses one platform-specific tool package. It downloads with retries,
+extracts in-process, repairs executable permissions on macOS, and validates the
+CLI, ESP32 core, uploader, compiler, and Windify libraries before atomically
+replacing an older package. Native filesystem/process APIs and YAML-escaped
+configuration keep Windows paths with spaces or Unicode user names intact.
 
 ---
 

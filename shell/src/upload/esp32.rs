@@ -1,5 +1,6 @@
 //! Direct esptool `write_flash` of three pre-built bins. Port of `src/upload/esp32.js`.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -171,18 +172,20 @@ impl Esp32 {
     }
 
     /// Port of `_buildArgs`.
-    fn build_args(&self, files: &[PathBuf; 3]) -> Vec<String> {
-        let mut args: Vec<String> = vec![
+    fn build_args(&self, files: &[PathBuf; 3]) -> Vec<OsString> {
+        let mut args: Vec<OsString> = vec![
             "--chip".into(),
-            self.cfg_str("chip", "esp32s3"),
+            self.cfg_str("chip", "esp32s3").into(),
             "--port".into(),
-            self.peripheral_path.clone(),
+            self.peripheral_path.clone().into(),
             "--baud".into(),
-            self.cfg_u64("baudrate", DEFAULT_BAUDRATE).to_string(),
+            self.cfg_u64("baudrate", DEFAULT_BAUDRATE)
+                .to_string()
+                .into(),
             "--before".into(),
-            self.cfg_str("before", "default_reset"),
+            self.cfg_str("before", "default_reset").into(),
             "--after".into(),
-            self.cfg_str("after", "hard_reset"),
+            self.cfg_str("after", "hard_reset").into(),
             "write_flash".into(),
         ];
         if self
@@ -194,21 +197,21 @@ impl Esp32 {
             args.push("--erase-all".into());
         }
         args.push("--flash_mode".into());
-        args.push(self.cfg_str("flashMode", "dio"));
+        args.push(self.cfg_str("flashMode", "dio").into());
         args.push("--flash_freq".into());
-        args.push(self.cfg_str("flashFreq", "80m"));
+        args.push(self.cfg_str("flashFreq", "80m").into());
         args.push("--flash_size".into());
-        args.push(self.cfg_str("flashSize", "keep"));
+        args.push(self.cfg_str("flashSize", "keep").into());
 
         let boot = self.addr("bootloader", DEFAULT_BOOTLOADER_ADDR);
         let part = self.addr("partitions", DEFAULT_PARTITIONS_ADDR);
         let fw = self.addr("firmware", DEFAULT_FIRMWARE_ADDR);
-        args.push(format!("0x{:x}", boot));
-        args.push(files[0].to_string_lossy().to_string());
-        args.push(format!("0x{:x}", part));
-        args.push(files[1].to_string_lossy().to_string());
-        args.push(format!("0x{:x}", fw));
-        args.push(files[2].to_string_lossy().to_string());
+        args.push(format!("0x{:x}", boot).into());
+        args.push(files[0].as_os_str().to_owned());
+        args.push(format!("0x{:x}", part).into());
+        args.push(files[1].as_os_str().to_owned());
+        args.push(format!("0x{:x}", fw).into());
+        args.push(files[2].as_os_str().to_owned());
         args
     }
 
@@ -264,7 +267,10 @@ impl Esp32 {
                 "{}[esp32] esptool {} {}\n",
                 ansi::CLEAR,
                 exe_label,
-                args.join(" ")
+                args.iter()
+                    .map(|arg| arg.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             None,
         );
