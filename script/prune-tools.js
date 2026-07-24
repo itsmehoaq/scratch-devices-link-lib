@@ -17,6 +17,7 @@ const requiredPaths = [
     'Arduino/packages/arduino/hardware/avr',
     'Arduino/packages/arduino/tools/avr-gcc',
     'Arduino/packages/arduino/tools/avrdude',
+    'Arduino/packages/builtin/tools/ctags',
     'Arduino/packages/esp32/hardware/esp32',
     'Arduino/packages/esp32/tools/esp-x32',
     'Arduino/packages/esp32/tools/esp32-arduino-libs',
@@ -159,6 +160,30 @@ const assertEsp32CompilerUsable = () => {
     console.log(`Verified ESP32-S3 compiler frontend: ${toDisplayPath(path.relative(toolsRoot, frontend))}`);
 };
 
+const assertArduinoIndexerUsable = () => {
+    const suffix = process.platform === 'win32' ? '.exe' : '';
+    const ctagsRoot = toAbsolute('Arduino/packages/builtin/tools/ctags');
+    const ctags = findFileNamed(ctagsRoot, `ctags${suffix}`);
+    if (!ctags) {
+        console.error(`Incomplete Arduino tools package; missing ctags${suffix}`);
+        process.exit(1);
+    }
+
+    const result = spawnSync(ctags, ['--version'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        windowsHide: true
+    });
+    if (result.error || result.status !== 0) {
+        const detail = result.error ?
+            result.error.message :
+            (result.stderr || result.stdout || `exit ${result.status}`).trim();
+        console.error(`Arduino ctags smoke test failed: ${detail}`);
+        process.exit(1);
+    }
+    console.log(`Verified Arduino source indexer: ${toDisplayPath(path.relative(toolsRoot, ctags))}`);
+};
+
 const printUsage = () => {
     console.log([
         'Usage: node script/prune-tools.js [--apply]',
@@ -182,6 +207,7 @@ if (!fs.existsSync(arduinoRoot)) {
 
 assertRequiredPaths();
 assertEsp32CompilerUsable();
+assertArduinoIndexerUsable();
 
 const pruneTargets = removePaths.concat(listEsp32LibPruneTargets())
     .filter(relativePath => fs.existsSync(toAbsolute(relativePath)));

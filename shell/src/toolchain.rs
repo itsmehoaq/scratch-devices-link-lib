@@ -99,6 +99,7 @@ pub fn validate_toolchain(tools_path: &Path) -> ToolchainValidation {
         .join("hardware")
         .join("esp32");
     let esp32_tools = arduino.join("packages").join("esp32").join("tools");
+    let builtin_tools = arduino.join("packages").join("builtin").join("tools");
     let libraries = arduino.join("libraries");
 
     let mut missing = Vec::new();
@@ -134,6 +135,13 @@ pub fn validate_toolchain(tools_path: &Path) -> ToolchainValidation {
     {
         missing.push(format!("ESP32-S3 C++ frontend ({frontend_name})"));
     }
+    let ctags_name = expected_binary("ctags");
+    if find_file_named(&builtin_tools.join("ctags"), &ctags_name)
+        .filter(|path| is_executable(path))
+        .is_none()
+    {
+        missing.push(format!("Arduino source indexer ({ctags_name})"));
+    }
 
     if !libraries.is_dir() {
         missing.push(format!("Arduino libraries ({})", libraries.display()));
@@ -159,9 +167,12 @@ pub fn check_toolchain(tools_path: &Path) -> (bool, PathBuf) {
 
 /// Restore execute bits that the 7z decoder does not preserve on Unix.
 ///
-/// ESP32 packages contain executables both in `bin/` directories and as
-/// top-level launchers such as `esptool`. Repairing only `arduino-cli` leaves a
-/// package that starts successfully but fails later with exit status 126.
+/// Arduino packages contain executable payloads in many layouts: `bin/`,
+/// `libexec/`, and version roots such as `builtin/tools/ctags/5.8/ctags`.
+/// The 7z decoder does not expose enough Unix mode metadata to distinguish
+/// binaries from support files reliably, so every regular file inside a
+/// package `tools` payload receives execute bits. Executing a support file is
+/// harmless, while missing one executable breaks builds at an arbitrary stage.
 #[cfg(unix)]
 pub fn repair_executable_permissions(tools_path: &Path) -> Result<usize, String> {
     use std::os::unix::fs::PermissionsExt;
@@ -181,7 +192,7 @@ pub fn repair_executable_permissions(tools_path: &Path) -> Result<usize, String>
         "mkspiffs",
     ];
     let mut repaired = 0;
-    let mut pending = vec![arduino];
+    let mut pending = vec![arduino.clone()];
     while let Some(dir) = pending.pop() {
         let entries = fs::read_dir(&dir)
             .map_err(|error| format!("read tool directory {}: {error}", dir.display()))?;
@@ -196,15 +207,22 @@ pub fn repair_executable_permissions(tools_path: &Path) -> Result<usize, String>
                 continue;
             }
 
-            let in_executable_tree = path.components().any(|component| {
+            let relative = path.strip_prefix(&arduino).unwrap_or(&path);
+            let mut inside_packages = false;
+            let in_package_tools = relative.components().any(|component| {
                 let name = component.as_os_str();
-                name == "bin" || name == "libexec"
+                if name == "packages" {
+                    inside_packages = true;
+                    false
+                } else {
+                    inside_packages && name == "tools"
+                }
             });
             let known_launcher = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| known_launchers.contains(&name));
-            if !in_executable_tree && !known_launcher {
+            if !in_package_tools && !known_launcher {
                 continue;
             }
 
@@ -358,6 +376,11 @@ mod tests {
                 .join("Arduino/packages/esp32/tools/esp-x32/2405/libexec/gcc/xtensa-esp-elf/13.2.0")
                 .join(expected_binary("cc1plus")),
         );
+        write_file(
+            &root
+                .join("Arduino/packages/builtin/tools/ctags/5.8-arduino11")
+                .join(expected_binary("ctags")),
+        );
         fs::create_dir_all(root.join("Arduino/libraries/Windify")).unwrap();
         repair_executable_permissions(root).unwrap();
     }
@@ -408,16 +431,28 @@ mod tests {
         let cc1plus = root.join(
             "Arduino/packages/esp32/tools/esp-x32/2405/libexec/gcc/xtensa-esp-elf/13.2.0/cc1plus",
         );
+        let ctags = root
+            .join("Arduino/packages/builtin/tools/ctags/5.8-arduino11")
+            .join(expected_binary("ctags"));
+        let library_source = root.join("Arduino/libraries/Windify/Windify.cpp");
+        write_file(&library_source);
         fs::set_permissions(&esptool, fs::Permissions::from_mode(0o644)).unwrap();
         fs::set_permissions(&cc1plus, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&ctags, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&library_source, fs::Permissions::from_mode(0o644)).unwrap();
         let repaired = repair_executable_permissions(&root).unwrap();
-        assert!(repaired >= 2);
+        assert!(repaired >= 3);
         assert_ne!(
             fs::metadata(esptool).unwrap().permissions().mode() & 0o111,
             0
         );
         assert_ne!(
             fs::metadata(cc1plus).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        assert_ne!(fs::metadata(ctags).unwrap().permissions().mode() & 0o111, 0);
+        assert_eq!(
+            fs::metadata(library_source).unwrap().permissions().mode() & 0o111,
             0
         );
         fs::remove_dir_all(root).unwrap();
